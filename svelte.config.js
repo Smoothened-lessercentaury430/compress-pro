@@ -17,7 +17,9 @@ const config = {
 		// adapter-auto only supports some environments, see https://svelte.dev/docs/kit/adapter-auto for a list.
 		// If your environment is not supported, or you settled on a specific environment, switch out the adapter.
 		// See https://svelte.dev/docs/kit/adapters for more information about adapters.
-		adapter: adapter(),
+		// persist: false — the app has no stateful bindings (ASSETS only), and the
+		// default on-disk .wrangler/state SQLite can crash workerd on CI (SQLITE_BUSY).
+		adapter: adapter({ platformProxy: { persist: false } }),
 		csp: {
 			// Prerendered pages (all of them) get per-page script hashes in a
 			// <meta http-equiv> tag; dev + runtime-rendered 404s get a header with

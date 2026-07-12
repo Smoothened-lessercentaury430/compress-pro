@@ -25,7 +25,9 @@ export default defineConfig({
 	// so cap concurrency instead of fully parallelizing.
 	fullyParallel: false,
 	workers: 4,
-	retries: 0,
+	// CI-only retries absorb infra hiccups (server restarts, slow disk); local
+	// runs stay strict so real regressions surface immediately.
+	retries: process.env.CI ? 2 : 0,
 	testIgnore: quick ? ['**/real-files.spec.ts'] : [],
 	reporter: [['list'], ['html', { outputFolder: 'test-results/pw-html', open: 'never' }]],
 	use: {
