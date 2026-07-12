@@ -1,0 +1,87 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  checks:
+    name: lint + typecheck + unit + build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4 # reads packageManager from package.json
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm lint
+      - run: pnpm check
+      - run: pnpm check:e2e
+      - run: pnpm test
+      - run: pnpm build
+
+  e2e-smoke:
+    name: e2e smoke (chromium)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      # Generated fixtures are hash-skipped by all three generators, so a
+      # cache hit turns the ~10 min generation into a <1 s no-op. Real-file
+      # fixtures (tests/fixtures/real) are local-only; their tests self-skip.
+      # HEIC fixtures need macOS `sips` — absent here, HEIC tests self-skip.
+      - uses: actions/cache@v4
+        with:
+          path: tests/fixtures/generated
+          key: fixtures-${{ hashFiles('scripts/generate-fixtures.mjs', 'e2e/video-fixtures.ts', 'e2e/audio-fixtures.ts', 'pnpm-lock.yaml') }}
+      - run: pnpm exec playwright install chromium --with-deps
+      - run: pnpm test:e2e:smoke --workers=2
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: e2e-smoke-report
+          path: |
+            test-results/pw-html
+            test-results/artifacts
+          retention-days: 7
+
+  e2e-xbrowser:
+    name: e2e capability smoke (firefox + webkit)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - uses: actions/cache@v4
+        with:
+          path: tests/fixtures/generated
+          key: fixtures-${{ hashFiles('scripts/generate-fixtures.mjs', 'e2e/video-fixtures.ts', 'e2e/audio-fixtures.ts', 'pnpm-lock.yaml') }}
+      # Chromium is needed even here: global-setup generates the video/audio
+      # fixtures inside a Chromium it launches itself.
+      - run: pnpm exec playwright install chromium firefox webkit --with-deps
+      - run: pnpm test:e2e:xbrowser --workers=2
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: e2e-xbrowser-report
+          path: |
+            test-results/pw-html
+            test-results/artifacts
+          retention-days: 7

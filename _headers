@@ -1,0 +1,25 @@
+# Cross-origin isolation: unlocks SharedArrayBuffer, which flips the bundled
+# multithreaded WASM builds live (@jsquash/avif avif_enc_mt, @jsquash/oxipng
+# pkg-parallel). Everything the app loads is same-origin (self-hosted fonts,
+# no CDN), so require-corp breaks nothing. adapter-cloudflare copies this file
+# into the build output and appends its immutable-cache block.
+#
+# The full Content-Security-Policy is injected per-page as a <meta http-equiv>
+# tag by kit.csp (svelte.config.js) — a static header can't carry the per-page
+# hydration-script hashes, and meta CSP can't express frame-ancestors, so the
+# framing protection plus two inert defense-in-depth directives live here. This
+# header CSP deliberately has no default-src/script-src: header and meta CSPs
+# are enforced as independent policies, and this one must never block what the
+# meta policy allows.
+#
+# These headers cover STATIC ASSETS only (including prerendered HTML); runtime
+# routes (robots.txt, sitemap.xml, llms.txt, 404s) get theirs from
+# src/hooks.server.ts.
+/*
+  Cross-Origin-Opener-Policy: same-origin
+  Cross-Origin-Embedder-Policy: require-corp
+  X-Content-Type-Options: nosniff
+  Referrer-Policy: strict-origin-when-cross-origin
+  X-Frame-Options: DENY
+  Permissions-Policy: camera=(), microphone=(), geolocation=(), payment=(), usb=(), midi=(), magnetometer=(), gyroscope=(), accelerometer=()
+  Content-Security-Policy: frame-ancestors 'none'; base-uri 'self'; object-src 'none'

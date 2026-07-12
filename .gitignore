@@ -1,0 +1,37 @@
+node_modules
+
+# Output
+.output
+.wrangler
+/.svelte-kit
+/build
+
+# Local calibration fixtures (PDF LEVELS in src/lib/codecs/pdf.ts were tuned on these)
+/*.pdf
+
+# E2E
+/test-results
+/tests/fixtures/generated
+
+# Real-file fixtures (large local samples; tests skip when absent)
+/tests/fixtures/real/*
+!/tests/fixtures/real/README.md
+
+# Claude Code local state
+.claude/settings.local.json
+.claude/scheduled_tasks.lock
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Env
+.env
+.env.*
+!.env.example
+!.env.test
+.dev.vars
+
+# Vite
+vite.config.js.timestamp-*
+vite.config.ts.timestamp-*

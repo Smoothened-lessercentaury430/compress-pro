@@ -1,0 +1,54 @@
+# Third-party licenses
+
+Compress Pro's own code is [MIT](LICENSE). The app additionally ships (as part of
+the built bundle served to browsers) the runtime dependencies below. Many are
+thin npm wrappers around compiled WASM engines — in those cases the engine's
+upstream license is the one that matters, and it is listed separately from the
+wrapper's. Licenses are as declared by the upstream projects at the time of
+writing; follow the links for the authoritative texts. This document is a
+good-faith engineering summary, not legal advice.
+
+## Copyleft components — read this before redistributing
+
+These bundled engines carry copyleft licenses. This repository publishes its
+complete corresponding source, which satisfies their source-availability
+requirements for this project and its hosted deployment. If you redistribute a
+build — especially modified or as part of a closed-source product — these terms
+apply to you directly:
+
+| Engine                                | License                                 | Ships via                 |
+| ------------------------------------- | --------------------------------------- | ------------------------- |
+| Ghostscript / GhostPDL                | AGPL-3.0                                | `@okathira/ghostpdl-wasm` |
+| gifsicle                              | GPL-2.0                                 | `gifsicle-wasm-browser`   |
+| LAME MP3 encoder                      | LGPL                                    | `@mediabunny/mp3-encoder` |
+| HEIC codecs (libheif + libde265/x265) | LGPL/GPL family — see upstream projects | `icodec`                  |
+| libimagequant / pngquant (lossy PNG)  | GPL-3.0-or-later (commercial dual-lic.) | `icodec`                  |
+
+## Full package table
+
+| Package                                  | Version | Wrapper license | Bundled engine → upstream license                                                                                                                                            |
+| ---------------------------------------- | ------- | --------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `@jsquash/jpeg`                          | 1.6.0   | Apache-2.0      | [MozJPEG](https://github.com/mozilla/mozjpeg) → IJG + Modified BSD-3 + zlib (restated in `codec/LICENSE.codec.md`)                                                           |
+| `@jsquash/webp`                          | 1.5.0   | Apache-2.0      | [libwebp](https://chromium.googlesource.com/webm/libwebp) → BSD-3-Clause (restated in package)                                                                               |
+| `@jsquash/avif`                          | 2.1.1   | Apache-2.0      | [libavif](https://github.com/AOMediaCodec/libavif) → BSD-2-Clause; [aom](https://aomedia.googlesource.com/aom/) → BSD-2-Clause + AOM Patent License 1.0 (per upstream)       |
+| `@jsquash/oxipng`                        | 2.3.0   | Apache-2.0      | [oxipng](https://github.com/oxipng/oxipng) → MIT (restated in package)                                                                                                       |
+| `@jsquash/png`                           | 3.1.1   | Apache-2.0      | [image-rs png crate](https://github.com/image-rs/image-png) → MIT/Apache-2.0; Squoosh-derived support code → BSD-3 (restated in package)                                     |
+| `@jsquash/resize`                        | 2.1.1   | Apache-2.0      | [PistonDevelopers/resize](https://github.com/PistonDevelopers/resize) → MIT; Squoosh-derived code → Apache-2.0 (per upstream)                                                |
+| `icodec`                                 | 0.6.0   | MIT             | HEIC: [libheif](https://github.com/strukturag/libheif) + libde265/x265 → LGPL/GPL family; lossy PNG: [libimagequant](https://pngquant.org) → GPL-3.0-or-later (per upstream) |
+| `@okathira/ghostpdl-wasm`                | 1.1.0   | AGPL-3.0        | [Ghostscript / GhostPDL](https://www.ghostscript.com) → AGPL-3.0 (full text shipped in package)                                                                              |
+| `gifsicle-wasm-browser`                  | 1.5.19  | MIT             | [gifsicle](https://www.lcdf.org/gifsicle/) → GPL-2.0 (per upstream; not restated in package)                                                                                 |
+| `mediabunny`                             | 1.50.8  | MPL-2.0         | — (pure TypeScript, no bundled engine)                                                                                                                                       |
+| `@mediabunny/mp3-encoder`                | 1.50.8  | MPL-2.0         | [LAME](https://lame.sourceforge.io) → LGPL (per upstream; not restated in package)                                                                                           |
+| `gifenc`                                 | 1.0.3   | MIT             | —                                                                                                                                                                            |
+| `fflate`                                 | 0.8.3   | MIT             | —                                                                                                                                                                            |
+| `svgo`                                   | 4.0.1   | MIT             | —                                                                                                                                                                            |
+| `pdf-lib`                                | 1.17.1  | MIT             | —                                                                                                                                                                            |
+| `pdfjs-dist` (pdf.js)                    | 6.1.200 | Apache-2.0      | —                                                                                                                                                                            |
+| `utif2`                                  | 4.1.0   | MIT             | —                                                                                                                                                                            |
+| `motion`                                 | 12.42.2 | MIT             | —                                                                                                                                                                            |
+| `@fontsource-variable/plus-jakarta-sans` | 5.2.8   | OFL-1.1         | [Plus Jakarta Sans](https://github.com/tokotype/PlusJakartaSans) → SIL Open Font License 1.1                                                                                 |
+| `@fontsource-variable/geist-mono`        | 5.2.8   | OFL-1.1         | [Geist Mono](https://github.com/vercel/geist-font) → SIL Open Font License 1.1                                                                                               |
+
+Build-time tooling (SvelteKit, Vite, Tailwind, Playwright, sharp, …) is not
+shipped to users and is therefore not listed here; see `package.json`
+`devDependencies` and each package's own license.

@@ -1,0 +1,936 @@
+@import 'tailwindcss';
+
+@custom-variant dark (&:where(.dark, .dark *));
+
+/* ── Typeface: Plus Jakarta Sans (variable, @fontsource npm package).
+   The @font-face rules come from the package CSS imported in +layout.svelte;
+   the woff2 files ship hashed from /_app/immutable/* — no CDN involved. */
+/* Metric-compatible stand-in so the swap barely reflows. */
+@font-face {
+	font-family: 'Jakarta Fallback';
+	src: local('Helvetica Neue'), local('Arial');
+	size-adjust: 105%;
+	ascent-override: 96%;
+}
+
+/* ── Raw brand values (light) ──────────────────────────────────────── */
+:root {
+	--app-canvas: #f1f2f4;
+	--app-card: #ffffff;
+	--app-card-2: #f4f5f7;
+	/* Split strokes: line = hairlines (row dividers, section rules),
+	   line-strong = field borders and pill rings. */
+	--app-line: rgb(0 0 0 / 0.07);
+	--app-line-strong: rgb(0 0 0 / 0.12);
+	--app-ink: #0b0c0e;
+	--app-ink-contrast: #ffffff;
+	--app-muted: #5d636b;
+	--app-faint: #878d96;
+	--app-grain-alpha: 0.06;
+	--app-haze-strength: 8%;
+	--app-accent: #2563eb;
+	--app-accent-contrast: #ffffff;
+	/* #2563eb is 4.61:1 on the canvas gray — no darkening needed */
+	--app-focus: var(--app-accent);
+	/* Floating panels (CompareModal) need an OPAQUE surface — the alpha
+	   dark --app-card would let the dimmed page ghost through. */
+	--app-modal: #ffffff;
+	--app-info-tint: #e8effc;
+	--app-info: #1d4ed8;
+	--app-ok-tint: #e3f4ea;
+	--app-ok: #157347;
+	--app-warn-tint: #fdf1da;
+	--app-warn: #91600a;
+	--app-danger-tint: #fdeaea;
+	--app-danger: #c03434;
+	/* Solid status colors (tab badge semaphore & co.) — deliberately the same
+	   in both themes: white text needs these exact shades, the pastel dark
+	   twins of ok/warn would wash it out. */
+	--app-ok-solid: #05ca37;
+	--app-warn-solid: #ff8400;
+	--app-shadow-pop: 0 24px 64px -12px rgb(0 0 0 / 0.25);
+	color-scheme: light;
+}
+
+/* ── Dark twins (class-based; .dark sits on <html>) ────────────────── */
+.dark {
+	--app-canvas: #0c0d0e;
+	/* Solid equivalents of ~5.5%/8% white over the canvas — light enough to
+	   pop off the dark canvas, and opaque so the grain stays on the canvas
+	   AROUND the cards, never on them (alpha surfaces let it bleed through). */
+	--app-card: #1b1d1f;
+	--app-card-2: #2a2d30;
+	--app-modal: #1a1c1e;
+	--app-line: rgb(255 255 255 / 0.1);
+	--app-line-strong: rgb(255 255 255 / 0.18);
+	--app-ink: #f4f5f6;
+	--app-ink-contrast: #0b0c0e;
+	--app-muted: #a6acb4;
+	--app-faint: #6b7076;
+	--app-grain-alpha: 0.07;
+	--app-haze-strength: 7%;
+	--app-accent: #3b82f6;
+	--app-accent-contrast: #ffffff;
+	--app-focus: var(--app-accent);
+	--app-info-tint: rgb(59 130 246 / 0.14);
+	--app-info: #93c5fd;
+	--app-ok-tint: rgb(52 199 123 / 0.13);
+	--app-ok: #63d69c;
+	--app-warn-tint: rgb(245 176 65 / 0.13);
+	--app-warn: #f2c069;
+	--app-danger-tint: rgb(255 107 107 / 0.13);
+	--app-danger: #ff8f8f;
+	--app-shadow-pop: 0 24px 64px -12px rgb(0 0 0 / 0.6);
+	color-scheme: dark;
+}
+
+/* ── Tailwind bridge (`inline` = utilities keep var() per-element,
+      so the .dark override wins wherever the class sits) ───────────── */
+@theme inline {
+	--font-sans:
+		'Plus Jakarta Sans Variable', 'Jakarta Fallback', ui-sans-serif, system-ui, sans-serif;
+	/* Data voice: micro-labels, readouts, sizes. Loaded like PJS in +layout.svelte. */
+	--font-mono: 'Geist Mono Variable', ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+
+	--color-canvas: var(--app-canvas);
+	--color-card: var(--app-card);
+	--color-card-2: var(--app-card-2);
+	--color-modal: var(--app-modal);
+	--color-line: var(--app-line);
+	--color-line-strong: var(--app-line-strong);
+	--color-ink: var(--app-ink);
+	--color-ink-contrast: var(--app-ink-contrast);
+	--color-muted: var(--app-muted);
+	--color-faint: var(--app-faint);
+	--color-accent: var(--app-accent);
+	--color-accent-contrast: var(--app-accent-contrast);
+	--color-info: var(--app-info);
+	--color-info-tint: var(--app-info-tint);
+	--color-ok: var(--app-ok);
+	--color-ok-tint: var(--app-ok-tint);
+	--color-warn: var(--app-warn);
+	--color-warn-tint: var(--app-warn-tint);
+	--color-danger: var(--app-danger);
+	--color-danger-tint: var(--app-danger-tint);
+	--color-ok-solid: var(--app-ok-solid);
+	--color-warn-solid: var(--app-warn-solid);
+
+	--shadow-pop: var(--app-shadow-pop);
+}
+
+/* Static tokens (identical in both themes) */
+@theme {
+	/* Soft geometry: rounded cards floating on the canvas, rounded fields.
+	   Kept as tokens so the two utilities stay grep-able. */
+	--radius-card: 24px;
+	--radius-field: 12px;
+
+	/* File-type tile hues (FileVisual glyphs) — deliberately punchier than the
+	   semantic status colors, which stay darker for TEXT contrast on white. */
+	--color-file-video: #2760ff;
+	--color-file-audio: #39c800;
+	--color-file-archive: #e18f00;
+	--color-file-pdf: #e92323;
+
+	--text-display: clamp(1.75rem, 1.2rem + 2.8vw, 2.875rem);
+	--text-display--line-height: 1.05;
+	--text-display--letter-spacing: -0.03em;
+	--text-display--font-weight: 600;
+
+	--text-stat: clamp(2rem, 1.4rem + 2.5vw, 3rem);
+	--text-stat--line-height: 1.05;
+	--text-stat--letter-spacing: -0.02em;
+	--text-stat--font-weight: 500;
+
+	/* Hero readout (savings Reduction, editorial list numerals) */
+	--text-hero: clamp(3rem, 2rem + 4.5vw, 6rem);
+	--text-hero--line-height: 0.95;
+	--text-hero--letter-spacing: -0.03em;
+	--text-hero--font-weight: 500;
+
+	--tracking-label: 0.06em;
+
+	--ease-swift: cubic-bezier(0.22, 1, 0.36, 1);
+	--ease-pop: cubic-bezier(0.34, 1.3, 0.64, 1);
+}
+
+/* ── Base ──────────────────────────────────────────────────────────── */
+@layer base {
+	:focus-visible {
+		outline: 2px solid var(--app-focus);
+		outline-offset: 2px;
+	}
+	::selection {
+		background: color-mix(in oklab, var(--app-accent) 18%, transparent);
+	}
+	/* Unit suffixes (px/KB/MB) replace the native spinners */
+	input[type='number'] {
+		appearance: textfield;
+		-moz-appearance: textfield;
+	}
+	input[type='number']::-webkit-inner-spin-button,
+	input[type='number']::-webkit-outer-spin-button {
+		appearance: none;
+		margin: 0;
+	}
+	/* Tailwind v4 preflight leaves buttons with the default cursor */
+	button:not(:disabled) {
+		cursor: pointer;
+	}
+	label:has(input.switch) {
+		cursor: pointer;
+	}
+}
+
+/* ── Liquid-glass range slider (Slider.svelte) ─────────────────────
+   Structure: [data-slider] > .slider-zone > track(+fill), invisible
+   native input (the interaction engine), visual thumb. The component
+   sets --f (0–1) inline; all positioning math derives from it.
+   The native thumb is sized to --slider-thumb-w so the browser's
+   pointer↔value mapping (half-thumb inset at each end) matches the
+   visual math: thumb left = (100% − w)·f, fill ends at thumb center. */
+@layer components {
+	[data-slider] {
+		--slider-thumb-w: 28px;
+		--slider-thumb-h: 18px;
+	}
+	.slider-zone {
+		position: relative;
+		height: 18px;
+	}
+	.slider-input {
+		position: absolute;
+		inset: 0;
+		width: 100%;
+		height: 100%;
+		margin: 0;
+		padding: 0;
+		appearance: none;
+		-webkit-appearance: none;
+		background: transparent;
+		opacity: 0;
+		cursor: pointer;
+		-webkit-tap-highlight-color: transparent;
+	}
+	.slider-zone[data-grabbed] .slider-input {
+		cursor: grabbing;
+	}
+	.slider-input::-webkit-slider-thumb {
+		-webkit-appearance: none;
+		appearance: none;
+		width: var(--slider-thumb-w);
+		height: var(--slider-thumb-h);
+	}
+	.slider-input::-moz-range-thumb {
+		width: var(--slider-thumb-w);
+		height: var(--slider-thumb-h);
+		border: none;
+	}
+	.slider-track {
+		position: absolute;
+		top: 50%;
+		right: 0;
+		left: 0;
+		height: 8px;
+		margin-top: -4px;
+		border-radius: 9999px;
+		background: var(--app-line-strong);
+		box-shadow: inset 0 1px 2px rgb(0 0 0 / 0.12);
+		pointer-events: none;
+	}
+	.slider-fill {
+		position: absolute;
+		inset: 0 auto 0 0;
+		width: calc(var(--slider-thumb-w) / 2 + (100% - var(--slider-thumb-w)) * var(--f, 0.5));
+		border-radius: 9999px;
+		background: var(--app-accent);
+	}
+	.slider-thumb {
+		position: absolute;
+		top: 50%;
+		left: calc((100% - var(--slider-thumb-w)) * var(--f, 0.5));
+		width: var(--slider-thumb-w);
+		height: var(--slider-thumb-h);
+		margin-top: calc(var(--slider-thumb-h) / -2);
+		border-radius: 9999px;
+		background-color: rgb(255 255 255 / 1);
+		box-shadow:
+			0 0 0 1px rgb(0 0 0 / 0.12),
+			0 1px 4px rgb(0 0 0 / 0.2);
+		/* blur(0px) base so the blur interpolates (from `none` it pops) */
+		backdrop-filter: blur(0px) saturate(100%);
+		-webkit-backdrop-filter: blur(0px) saturate(100%);
+		pointer-events: none;
+		/* left is deliberately NOT transitioned — the thumb must track the
+		   pointer with zero lag; only the press morph animates */
+		transition:
+			transform 0.2s cubic-bezier(0.175, 0.885, 0.32, 2.2),
+			background-color 0.1s cubic-bezier(0.175, 0.885, 0.32, 2.2),
+			box-shadow 0.2s cubic-bezier(0.175, 0.885, 0.32, 2.2),
+			backdrop-filter 0.2s ease,
+			-webkit-backdrop-filter 0.2s ease;
+	}
+	/* While grabbed: inflate into a glassy lens (same recipe as .switch:active) */
+	.slider-zone[data-grabbed] .slider-thumb {
+		transform: scale(1.4);
+		background-color: rgb(255 255 255 / 0.08);
+		backdrop-filter: blur(4px) saturate(150%);
+		-webkit-backdrop-filter: blur(4px) saturate(150%);
+		box-shadow:
+			0 0.5px 4px 0 rgb(0 0 0 / 0.12),
+			0 6px 13px 0 rgb(0 0 0 / 0.12),
+			inset 1px 1px 0 rgb(255 255 255 / 0.8),
+			inset 0 0 5px rgb(255 255 255 / 0.8);
+		transition-duration: 0.4s;
+	}
+	/* opacity: 0 hides the input's global focus ring — recreate it on the thumb */
+	.slider-input:focus-visible ~ .slider-thumb {
+		outline: 2px solid var(--app-accent);
+		outline-offset: 2px;
+	}
+	/* Touch devices: a fatter thumb and taller hit area */
+	@media (pointer: coarse) {
+		[data-slider] {
+			--slider-thumb-w: 32px;
+			--slider-thumb-h: 22px;
+		}
+		.slider-zone {
+			height: 28px;
+		}
+	}
+
+	/* ── Hardware toggle switch ───────────────────────────────────────
+	   Usage: <input type="checkbox" class="switch">
+	   Grid-column animation technique: the knob fills the middle track
+	   column and slides because the flanking fr columns animate; while
+	   held it presses flat (square machine language). */
+	input[type='checkbox'].switch {
+		appearance: none;
+		-webkit-appearance: none;
+		-moz-appearance: none;
+		position: relative;
+		display: inline-grid;
+		width: 54px;
+		height: 24px;
+		padding: 2px;
+		margin: 0;
+		border: none;
+		flex-shrink: 0;
+		border-radius: 12px;
+		background-color: rgb(120 120 120 / 0.2);
+		grid-template-columns: 0fr 2fr 1fr;
+		grid-template-rows: 1fr;
+		place-content: center;
+		transition:
+			background-color 0.25s ease,
+			grid-template-columns 0.2s;
+		cursor: pointer;
+		vertical-align: middle;
+		-webkit-user-select: none;
+		user-select: none;
+	}
+	input[type='checkbox'].switch::before {
+		content: '';
+		position: relative;
+		grid-row-start: 1;
+		grid-column-start: 2;
+		border-radius: 10px;
+		background-color: rgb(255 255 255 / 1);
+		inset-inline-start: 0;
+		translate: 0;
+		transition:
+			background-color 0.1s cubic-bezier(0.175, 0.885, 0.32, 2.2),
+			translate 0.2s cubic-bezier(0.175, 0.885, 0.32, 2.2),
+			inset-inline-start 0.2s cubic-bezier(0.175, 0.885, 0.32, 2.2),
+			transform 0.2s cubic-bezier(0.175, 0.885, 0.32, 2.2);
+	}
+	/* While held: the knob scales up into a glassy state */
+	input[type='checkbox'].switch:active::before {
+		transform: scale(1.35);
+		border-radius: 11px;
+		background: rgb(255 255 255 / 0.08);
+		box-shadow:
+			0 0.5px 4px 0 rgb(0 0 0 / 0.12),
+			0 6px 13px 0 rgb(0 0 0 / 0.12),
+			inset 1px 1px 0 rgb(255 255 255 / 0.8),
+			inset 0 0 5px rgb(255 255 255 / 0.8);
+		transition: all 0.4s cubic-bezier(0.175, 0.885, 0.32, 2.2);
+	}
+	input[type='checkbox'].switch:checked {
+		background-color: var(--app-accent);
+		grid-template-columns: 1fr 2fr 0fr;
+	}
+}
+
+/* Hide scrollbars on horizontally scrolling pill tracks */
+@utility scrollbar-none {
+	scrollbar-width: none;
+	&::-webkit-scrollbar {
+		display: none;
+	}
+}
+
+/* ── Instrument voice ────────────────────────────────────────────────
+   microlabel: the tiny uppercase mono caption used for section labels,
+   stat labels and meta strips. Deliberately carries no color — pair with
+   text-muted/text-faint at the call site so dark mode needs no twin. */
+@utility microlabel {
+	font-family: var(--font-mono);
+	font-size: 0.6875rem;
+	font-weight: 500;
+	line-height: 1.4;
+	letter-spacing: 0.1em;
+	text-transform: uppercase;
+	font-variant-numeric: tabular-nums;
+}
+
+/* hint: the 11px explainer under a control — one step below text-xs so the
+   label/control/hint scale reads as three distinct voices. Carries no color
+   for the same reason as microlabel (call sites pair it with text-faint,
+   or swap to text-warn for validation states). */
+@utility hint {
+	font-size: 0.6875rem;
+	line-height: 1.5;
+}
+
+@layer utilities {
+	/* Enlarges one .text-stat readout to hero scale. Source order beats the
+	   text-stat utility inside the same layer — never stack a second text-*
+	   utility on the element instead (utility order is undefined). */
+	.stat-hero {
+		font-size: var(--text-hero);
+		line-height: var(--text-hero--line-height);
+		letter-spacing: var(--text-hero--letter-spacing);
+	}
+}
+
+/* ── Canvas: paper grain ────────────────────────────────────────────
+   Subtle noise texture behind the machine (feTurbulence alpha as a mask
+   over an ink-colored layer, so both themes come from --app-ink +
+   --app-grain-alpha). It must live on a ::before: a mask on the wrapper
+   itself would clip the content. The wrapper's `relative` utility anchors
+   the layer; header/main/footer are position:relative and later in source
+   order, so they paint above it. */
+.canvas-grain::before {
+	content: '';
+	position: absolute;
+	inset: 0;
+	pointer-events: none;
+	background: var(--app-ink);
+	opacity: var(--app-grain-alpha);
+	mask-image: url("data:image/svg+xml,%3Csvg%20xmlns%3D'http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg'%20width%3D'240'%20height%3D'240'%3E%3Cfilter%20id%3D'n'%3E%3CfeTurbulence%20type%3D'fractalNoise'%20baseFrequency%3D'0.8'%20numOctaves%3D'3'%20stitchTiles%3D'stitch'%2F%3E%3C%2Ffilter%3E%3Crect%20width%3D'240'%20height%3D'240'%20filter%3D'url(%23n)'%2F%3E%3C%2Fsvg%3E");
+	mask-size: 240px 240px;
+}
+
+/* ── Canvas: corner haze ────────────────────────────────────────────
+   Faint accent-tinted radial in the top-right corner. Lives as a background
+   LAYER on the wrapper (not a child element) so the grain ::before paints
+   over it and dithers away any banding. The ellipse fades out well inside
+   its own box, so it never hard-edges or widens the page. */
+.canvas-haze {
+	background-image: radial-gradient(
+		115% 115% at 100% 0%,
+		color-mix(in oklab, var(--app-accent) var(--app-haze-strength), transparent),
+		transparent 68%
+	);
+	background-repeat: no-repeat;
+	background-size: min(80vw, 46rem) min(70vh, 32rem);
+	background-position: top right;
+}
+
+/* ── Datasheet spec rows (FormatInfo) — mono label rail left, content right.
+   Grid margins don't collapse: the h2 + * reset keeps the first content
+   child level with the label; min-width: 0 stops inner grids/long words
+   from blowing the 1fr column open. Mobile keeps the stacked flow. */
+@media (min-width: 40rem) {
+	.spec-row {
+		display: grid;
+		grid-template-columns: 11rem 1fr;
+		column-gap: 2rem;
+	}
+	.spec-row > h2 {
+		grid-column: 1;
+		/* optical cap alignment, measured: the 13px/1.625 content column carries
+		   more top half-leading than the 11px/1.4 label — nudge the label down
+		   so both first text lines share a top (box rows ignore the 2px) */
+		margin-top: 2px;
+	}
+	.spec-row > :not(h2) {
+		grid-column: 2;
+		min-width: 0;
+	}
+	.spec-row > h2 + * {
+		margin-top: 0;
+	}
+}
+
+/* ── Control panel grid ─────────────────────────────────────────────
+   Single-column settings layout inside the card — one setting per row,
+   structure comes from cell padding (air), not painted seams. */
+.panel-grid {
+	display: grid;
+	grid-template-columns: 1fr;
+}
+.panel-grid > * {
+	margin: 0;
+	padding: 1rem;
+}
+@media (min-width: 40rem) {
+	.panel-grid > * {
+		padding: 1rem 1.25rem;
+	}
+}
+/* Leading mode bar hugs the card edge like the tab row in the intake card. */
+.panel-grid > .panel-span:first-child {
+	padding: 0.5rem 0.5rem 0.25rem;
+}
+
+/* "How it works" — three soft cards floating on the canvas. */
+.how-steps {
+	counter-reset: step;
+	list-style: none;
+	padding: 0;
+	display: grid;
+	grid-template-columns: 1fr;
+	gap: 0.75rem;
+}
+.how-steps > li {
+	counter-increment: step;
+	padding: 1.25rem;
+	border-radius: 1rem;
+	background: var(--app-card);
+	/* locked to the guide-prose voice (13px + leading-relaxed) */
+	font-size: 0.8125rem;
+	line-height: 1.625;
+}
+@media (min-width: 48rem) {
+	.how-steps {
+		grid-template-columns: repeat(3, 1fr);
+	}
+}
+.how-steps > li::before {
+	content: '0' counter(step);
+	display: block;
+	margin-bottom: 0.75rem;
+	font-family: var(--font-mono);
+	font-size: 2rem;
+	font-weight: 500;
+	line-height: 1;
+	letter-spacing: -0.02em;
+	color: var(--app-ink);
+	font-variant-numeric: tabular-nums;
+}
+
+/* Dropzone dashed frame — opens on hover (3px out) and wider while a file is
+   dragged over (5px out, accent lines + info fill). Hover/drag tint fills the
+   INSIDE of the frame only (the span's own bg), not the whole card cell. The
+   .dragging rule sits after the :hover one — equal specificity, so source
+   order lets the wider stance and the blue fill win while both states apply. */
+.dz-frame {
+	inset: 0;
+	border-color: var(--app-line-strong);
+	transition:
+		border-color 0.15s ease,
+		background-color 0.15s ease,
+		inset 0.35s var(--ease-pop);
+}
+.group:hover .dz-frame {
+	inset: -3px;
+	background-color: color-mix(in srgb, var(--app-card-2) 40%, transparent);
+}
+.group.dragging .dz-frame {
+	inset: -5px;
+	border-color: var(--app-accent);
+	background-color: var(--app-info-tint);
+}
+
+/* Progress bar sheen: a light band sweeps the accent fill so a stalled bar
+   (single huge file) still reads as "working". Lives on the fill's ::after —
+   its transform is independent of the fill's own progress translate. */
+@keyframes progress-sheen {
+	from {
+		transform: translateX(-100%);
+	}
+	to {
+		transform: translateX(400%);
+	}
+}
+.progress-sheen::after {
+	content: '';
+	position: absolute;
+	inset: 0 auto 0 0;
+	width: 25%;
+	background: linear-gradient(90deg, transparent, rgb(255 255 255 / 0.4), transparent);
+	animation: progress-sheen 1.8s ease-in-out infinite;
+}
+
+/* Edge fade for scrollable pill tracks (the Tabs navs and the ops rail) — set
+   by the slideIndicator attachment via container.dataset.scroll. Fades whichever
+   edge(s) still have more content to scroll toward; absent when it all fits. */
+[data-scroll='end'] {
+	mask-image: linear-gradient(to right, black calc(100% - 28px), transparent);
+}
+[data-scroll='start'] {
+	mask-image: linear-gradient(to right, transparent, black 28px);
+}
+[data-scroll='both'] {
+	mask-image: linear-gradient(
+		to right,
+		transparent,
+		black 28px,
+		black calc(100% - 28px),
+		transparent
+	);
+}
+
+/* ── Pre-hydration entrance for SSR'd content ──────────────────────
+   Usage: class="reveal-css" style="--reveal-i: 2" */
+@keyframes reveal-rise {
+	from {
+		opacity: 0;
+		transform: translateY(12px);
+	}
+}
+.reveal-css {
+	animation: reveal-rise 0.55s var(--ease-swift) both;
+	animation-delay: calc(var(--reveal-i, 0) * 60ms);
+}
+
+/* ── Shimmer while compressing (add .shimmer to the card) ──────────── */
+@keyframes shimmer-sweep {
+	from {
+		background-position: 130% 0;
+	}
+	to {
+		background-position: -130% 0;
+	}
+}
+.shimmer {
+	position: relative;
+	overflow: hidden;
+}
+.shimmer::after {
+	content: '';
+	position: absolute;
+	inset: 0;
+	pointer-events: none;
+	background: linear-gradient(
+		105deg,
+		transparent 40%,
+		color-mix(in oklab, var(--app-accent) 7%, transparent) 50%,
+		transparent 60%
+	);
+	background-size: 220% 100%;
+	animation: shimmer-sweep 1.8s linear infinite;
+}
+
+/* ── Icon micro-interactions ─────────────────────────────────────────
+   Classes go on the Icon svg (via its `class` prop); hovers trigger from
+   the parent button/link/group. Paths carry pathLength=1, so .icon-draw's
+   dash math is normalized for every glyph. */
+@keyframes icon-draw {
+	to {
+		stroke-dashoffset: 0;
+	}
+}
+.icon-draw path {
+	stroke-dasharray: 1;
+	stroke-dashoffset: 1;
+	animation: icon-draw 0.3s var(--ease-swift) forwards;
+}
+
+.icon-nudge-left,
+.icon-nudge-right,
+.icon-rotate,
+.icon-grow,
+.icon-shrink {
+	transition:
+		translate 0.3s var(--ease-pop),
+		rotate 0.3s var(--ease-pop),
+		scale 0.3s var(--ease-pop);
+}
+button:not(:disabled):hover .icon-nudge-left {
+	translate: -1px 0;
+}
+button:not(:disabled):hover .icon-nudge-right {
+	translate: 1px 0;
+}
+:is(button, a):hover .icon-rotate {
+	rotate: 90deg;
+}
+button:hover .icon-grow {
+	scale: 1.08;
+}
+button:hover .icon-shrink {
+	scale: 0.92;
+}
+
+/* Upload glyph: arrow (first path) lifts out of the tray on hover, bobs
+   while a file is dragged over (.dragging on the dropzone root). */
+.icon-upload path:first-child {
+	transition: translate 0.3s var(--ease-pop);
+}
+.group:hover .icon-upload path:first-child {
+	translate: 0 -1.5px;
+}
+@keyframes icon-bob {
+	50% {
+		translate: 0 -2px;
+	}
+}
+.dragging .icon-upload path:first-child {
+	animation: icon-bob 0.9s ease-in-out infinite;
+}
+/* Idle nudge: the dropzone arrow hops every few seconds as a quiet invite.
+   Hover cancels it (the transition lift takes the arrow); the drag bob above
+   already wins on specificity. */
+@keyframes icon-hop {
+	0%,
+	86%,
+	100% {
+		translate: 0 0;
+	}
+	91% {
+		translate: 0 -2px;
+	}
+	96% {
+		translate: 0 0;
+	}
+}
+.icon-hop path:first-child {
+	animation: icon-hop 4.5s ease-in-out infinite;
+}
+.group:hover .icon-hop path:first-child {
+	animation: none;
+}
+
+/* Primary-tab icons (desktop): each glyph does its own micro move as its tab
+   activates — the active branch remounts the svg, replaying the animation. */
+.icon-activate-images path:nth-child(2) {
+	stroke-dasharray: 1;
+	stroke-dashoffset: 1;
+	animation: icon-draw 0.45s var(--ease-swift) 0.05s forwards;
+}
+.icon-activate-pdf path:nth-child(2),
+.icon-activate-pdf path:nth-child(3) {
+	stroke-dasharray: 1;
+	stroke-dashoffset: 1;
+	animation: icon-draw 0.3s var(--ease-swift) 0.08s forwards;
+}
+.icon-activate-pdf path:nth-child(3) {
+	animation-delay: 0.2s;
+}
+@keyframes tab-icon-nudge {
+	40% {
+		translate: 1.5px 0;
+	}
+}
+.icon-activate-video path:last-child {
+	animation: tab-icon-nudge 0.35s var(--ease-pop);
+}
+@keyframes tab-icon-eq {
+	45% {
+		scale: 1 1.7;
+	}
+}
+.icon-activate-audio path {
+	transform-box: fill-box;
+	transform-origin: center;
+}
+.icon-activate-audio path:nth-child(1) {
+	animation: tab-icon-eq 0.35s ease-in-out;
+}
+.icon-activate-audio path:nth-child(2) {
+	animation: tab-icon-eq 0.35s ease-in-out 0.05s;
+}
+.icon-activate-audio path:nth-child(3) {
+	animation: tab-icon-eq 0.35s ease-in-out 0.1s;
+}
+.icon-activate-audio path:nth-child(4) {
+	animation: tab-icon-eq 0.35s ease-in-out 0.15s;
+}
+@keyframes tab-icon-lid {
+	35% {
+		translate: 0 -2px;
+	}
+	70% {
+		translate: 0 0.5px;
+	}
+}
+.icon-activate-zip path:first-child {
+	animation: tab-icon-lid 0.4s var(--ease-pop);
+}
+@keyframes tab-icon-swing {
+	35% {
+		rotate: 10deg;
+	}
+	70% {
+		rotate: -6deg;
+	}
+}
+.icon-activate-exif {
+	transform-origin: 35% 35%;
+	animation: tab-icon-swing 0.45s var(--ease-pop);
+}
+
+/* Octocat: tail flicks and ears perk up once per hover-in. Pivots are
+   user-space points (view-box px = user units): tail root (9,19); body
+   anchored at the feet (y=22) so the stretch reads as "standing taller".
+   overflow visible: the head stroke sits ~0.1 units from the viewBox top,
+   so any upward ear travel would flat-top clip otherwise (the 40px link
+   circle absorbs the ~1px excursion). */
+@keyframes icon-tail-perk {
+	35% {
+		rotate: 14deg;
+	}
+	70% {
+		rotate: -5deg;
+	}
+}
+@keyframes icon-ears-perk {
+	35% {
+		scale: 1 1.06;
+	}
+}
+.icon-octo {
+	overflow: visible;
+}
+.icon-octo path {
+	transform-box: view-box;
+}
+.icon-octo path:first-child {
+	transform-origin: 9px 19px;
+}
+.icon-octo path:last-child {
+	transform-origin: 12px 22px;
+}
+a:hover .icon-octo path:first-child {
+	animation: icon-tail-perk 0.55s var(--ease-swift);
+}
+a:hover .icon-octo path:last-child {
+	animation: icon-ears-perk 0.55s var(--ease-swift);
+}
+
+/* Info: the i's dot hops; the stem dips first in anticipation. */
+@keyframes icon-stem-dip {
+	20% {
+		scale: 1 0.93;
+	}
+	45% {
+		scale: 1 1;
+	}
+}
+@keyframes icon-dot-hop {
+	0%,
+	18% {
+		translate: 0 0;
+	}
+	55% {
+		translate: 0 -1.5px;
+	}
+}
+.icon-info-hop path {
+	transform-box: view-box;
+}
+.icon-info-hop path:nth-child(2) {
+	transform-origin: 12px 17px;
+}
+a:hover .icon-info-hop path:nth-child(2) {
+	animation: icon-stem-dip 0.55s var(--ease-swift);
+}
+a:hover .icon-info-hop path:nth-child(3) {
+	animation: icon-dot-hop 0.55s var(--ease-pop);
+}
+
+/* Theme toggle: sun rays sweep 45° while the disc pops (8-fold symmetry →
+   the end state lands exactly where it started, so the post-animation
+   reset is invisible); moon/monitor are single-path glyphs and rock
+   around the icon center instead. One rule set covers whichever glyph
+   {#key} has mounted. */
+@keyframes icon-rays-sweep {
+	to {
+		rotate: 45deg;
+	}
+}
+@keyframes icon-disc-pop {
+	40% {
+		scale: 1.08;
+	}
+}
+@keyframes icon-theme-rock {
+	30% {
+		rotate: -7deg;
+	}
+	65% {
+		rotate: 5deg;
+	}
+}
+.icon-theme path {
+	transform-box: view-box;
+	transform-origin: 12px 12px;
+}
+button:hover .icon-theme path:nth-child(1):not(:only-child) {
+	animation: icon-disc-pop 0.6s var(--ease-swift);
+}
+button:hover .icon-theme path:nth-child(2) {
+	animation: icon-rays-sweep 0.6s var(--ease-swift);
+}
+button:hover .icon-theme path:only-child {
+	animation: icon-theme-rock 0.5s var(--ease-swift);
+}
+
+@media (prefers-reduced-motion: reduce) {
+	.reveal-css {
+		animation: none;
+	}
+	.dz-frame {
+		transition: none;
+	}
+	.shimmer::after,
+	.progress-sheen::after {
+		animation: none;
+		opacity: 0;
+	}
+	input[type='checkbox'].switch,
+	input[type='checkbox'].switch::before,
+	.slider-thumb {
+		transition: none;
+	}
+	.icon-draw path {
+		animation: none;
+		stroke-dashoffset: 0;
+	}
+	.dragging .icon-upload path:first-child,
+	.icon-hop path:first-child,
+	.icon-activate-video path:last-child,
+	/* :nth-child(n) matches every bar and outweighs the per-bar stagger rules */
+	.icon-activate-audio path:nth-child(n),
+	.icon-activate-zip path:first-child,
+	.icon-activate-exif,
+	/* header hover selectors repeated verbatim — a blanket `path` would lose
+	   the specificity race against their :nth-child()/:first-child forms */
+	a:hover .icon-octo path:first-child,
+	a:hover .icon-octo path:last-child,
+	a:hover .icon-info-hop path:nth-child(2),
+	a:hover .icon-info-hop path:nth-child(3),
+	button:hover .icon-theme path:nth-child(1):not(:only-child),
+	button:hover .icon-theme path:nth-child(2),
+	button:hover .icon-theme path:only-child {
+		animation: none;
+	}
+	/* draw-in variants also park the dash at "fully drawn" */
+	.icon-activate-images path:nth-child(2),
+	.icon-activate-pdf path:nth-child(2),
+	.icon-activate-pdf path:nth-child(3) {
+		animation: none;
+		stroke-dashoffset: 0;
+	}
+	.icon-nudge-left,
+	.icon-nudge-right,
+	.icon-rotate,
+	.icon-grow,
+	.icon-shrink,
+	.icon-upload path:first-child {
+		transition: none;
+	}
+}

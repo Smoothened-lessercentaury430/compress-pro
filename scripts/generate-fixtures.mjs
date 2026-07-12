@@ -1,0 +1,1421 @@
+/**
+ * Deterministic e2e fixture generator.
+ *
+ * Every pixel source is either an authored SVG scene or seeded-PRNG noise, so
+ * repeated runs produce equivalent (not byte-identical across sharp versions —
+ * irrelevant, tests read expectations from the manifest written by THIS run).
+ *
+ * Usage:
+ *   node scripts/generate-fixtures.mjs               # always regenerate
+ *   node scripts/generate-fixtures.mjs --if-missing  # skip when manifest hash matches
+ *
+ * Output: tests/fixtures/generated/ + .manifest.json (per-file expected
+ * properties: dims, pages, delays, alpha, transparent/marker sample points).
+ * HEIC is produced with macOS `sips`; when unavailable the manifest records
+ * heicAvailable=false and HEIC tests skip.
+ */
+import { createHash } from 'node:crypto';
+import { zipSync } from 'fflate';
+import { crc32 } from 'node:zlib';
+import { execFileSync } from 'node:child_process';
+import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import sharp from 'sharp';
+import pdfLib from 'pdf-lib';
+
+const { PDFDocument, PDFName, StandardFonts, rgb } = pdfLib;
+
+const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
+const OUT = join(ROOT, 'tests', 'fixtures', 'generated');
+const MANIFEST = join(OUT, '.manifest.json');
+
+// Hash of generator source + sharp version — staleness check for --if-missing.
+const GEN_HASH = createHash('sha256')
+	.update(readFileSync(fileURLToPath(import.meta.url)))
+	.update(sharp.versions?.sharp ?? 'sharp')
+	.digest('hex')
+	.slice(0, 16);
+
+if (process.argv.includes('--if-missing') && existsSync(MANIFEST)) {
+	try {
+		const m = JSON.parse(readFileSync(MANIFEST, 'utf8'));
+		if (m.genHash === GEN_HASH) {
+			console.log('fixtures up to date (hash match) — skipping');
+			process.exit(0);
+		}
+	} catch {
+		/* regenerate */
+	}
+}
+mkdirSync(OUT, { recursive: true });
+
+/** @type {Record<string, object>} name → expected properties for tests */
+const manifest = {};
+
+// ---------------------------------------------------------------- utilities
+
+function mulberry32(seed) {
+	let a = seed >>> 0;
+	return () => {
+		a |= 0;
+		a = (a + 0x6d2b79f5) | 0;
+		let t = Math.imul(a ^ (a >>> 15), 1 | a);
+		t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+		return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+	};
+}
+
+/** Seeded RGBA noise layer (alpha = opacity 0..255) for photo-like grain. */
+function noiseLayer(w, h, alpha, seed) {
+	const rand = mulberry32(seed);
+	const buf = Buffer.allocUnsafe(w * h * 4);
+	for (let i = 0; i < w * h; i++) {
+		const v = Math.floor(rand() * 256);
+		buf[i * 4] = v;
+		buf[i * 4 + 1] = Math.floor(rand() * 256);
+		buf[i * 4 + 2] = v; // correlate R/B so noise isn't pure confetti
+		buf[i * 4 + 3] = alpha;
+	}
+	return { input: buf, raw: { width: w, height: h, channels: 4 } };
+}
+
+/** Photo-ish scene: gradients, sun, soft blobs, buildings, fine text. */
+function photoSceneSvg(w, h) {
+	const t = [];
+	for (let i = 0; i < 12; i++) {
+		t.push(
+			`<text x="${(w * 0.06).toFixed(0)}" y="${(h * (0.52 + i * 0.035)).toFixed(0)}" font-family="Helvetica, sans-serif" font-size="${Math.max(10, h * 0.016).toFixed(0)}" fill="rgba(20,24,28,0.85)">The quick brown fox jumps over the lazy dog 0123456789 — line ${i + 1}</text>`
+		);
+	}
+	const buildings = [];
+	const rand = mulberry32(7);
+	for (let i = 0; i < 14; i++) {
+		const bw = w * (0.03 + rand() * 0.05);
+		const bh = h * (0.1 + rand() * 0.28);
+		const bx = w * 0.02 + i * w * 0.07;
+		buildings.push(
+			`<rect x="${bx.toFixed(0)}" y="${(h * 0.48 - bh).toFixed(0)}" width="${bw.toFixed(0)}" height="${bh.toFixed(0)}" fill="rgb(${40 + Math.floor(rand() * 60)},${50 + Math.floor(rand() * 60)},${70 + Math.floor(rand() * 60)})"/>`
+		);
+	}
+	return `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}">
+  <defs>
+    <linearGradient id="sky" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#7db9e8"/><stop offset="0.5" stop-color="#f7c873"/><stop offset="1" stop-color="#e8e2d4"/>
+    </linearGradient>
+    <radialGradient id="sun" cx="0.75" cy="0.22" r="0.28">
+      <stop offset="0" stop-color="#fff6d8"/><stop offset="1" stop-color="#fff6d800"/>
+    </radialGradient>
+    <filter id="soft" x="-20%" y="-20%" width="140%" height="140%"><feGaussianBlur stdDeviation="${(w / 90).toFixed(1)}"/></filter>
+  </defs>
+  <rect width="${w}" height="${h}" fill="url(#sky)"/>
+  <rect width="${w}" height="${h}" fill="url(#sun)"/>
+  <ellipse cx="${w * 0.3}" cy="${h * 0.3}" rx="${w * 0.18}" ry="${h * 0.1}" fill="#ffffff" opacity="0.7" filter="url(#soft)"/>
+  <ellipse cx="${w * 0.55}" cy="${h * 0.24}" rx="${w * 0.14}" ry="${h * 0.07}" fill="#f2ede2" opacity="0.8" filter="url(#soft)"/>
+  ${buildings.join('\n  ')}
+  <rect x="0" y="${h * 0.48}" width="${w}" height="${h * 0.52}" fill="#dcd6c8"/>
+  <circle cx="${w * 0.82}" cy="${h * 0.72}" r="${w * 0.06}" fill="#b3543e"/>
+  <circle cx="${w * 0.82}" cy="${h * 0.72}" r="${w * 0.035}" fill="#e8b04b"/>
+  ${t.join('\n  ')}
+</svg>`;
+}
+
+async function photoScene(w, h, { noise = 40, seed = 42 } = {}) {
+	return sharp(Buffer.from(photoSceneSvg(w, h)))
+		.composite([{ ...noiseLayer(w, h, noise, seed), blend: 'overlay' }])
+		.removeAlpha()
+		.toColourspace('srgb')
+		.png()
+		.toBuffer();
+}
+
+/** Graphic on TRANSPARENT background; corners stay fully transparent. */
+function alphaGraphicSvg(w, h) {
+	return `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}">
+  <defs>
+    <linearGradient id="g" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#2563eb"/><stop offset="1" stop-color="#9333ea" stop-opacity="0.35"/>
+    </linearGradient>
+  </defs>
+  <rect x="${w * 0.2}" y="${h * 0.2}" width="${w * 0.6}" height="${h * 0.6}" rx="${w * 0.04}" fill="url(#g)"/>
+  <circle cx="${w * 0.5}" cy="${h * 0.5}" r="${h * 0.18}" fill="#f59e0b" opacity="0.9"/>
+  <text x="${w * 0.5}" y="${h * 0.53}" text-anchor="middle" font-family="Helvetica, sans-serif" font-weight="bold" font-size="${h * 0.09}" fill="#111827">ALPHA</text>
+</svg>`;
+}
+
+/** Animation frame: bouncing ball + frame counter over a gradient. */
+function animFrameSvg(w, h, i, n) {
+	const x = w * 0.15 + (w * 0.7 * i) / Math.max(1, n - 1);
+	const y = h * 0.5 + Math.sin((i / n) * Math.PI * 2) * h * 0.25;
+	return `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}">
+  <defs><linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+    <stop offset="0" stop-color="#0f172a"/><stop offset="1" stop-color="#334155"/>
+  </linearGradient></defs>
+  <rect width="${w}" height="${h}" fill="url(#bg)"/>
+  <circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="${h * 0.12}" fill="#f43f5e"/>
+  <circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="${h * 0.06}" fill="#fbbf24"/>
+  <text x="${w * 0.06}" y="${h * 0.16}" font-family="Helvetica, sans-serif" font-weight="bold" font-size="${h * 0.12}" fill="#e2e8f0">${i + 1}/${n}</text>
+</svg>`;
+}
+
+async function animFrames(w, h, n) {
+	const frames = [];
+	for (let i = 0; i < n; i++) {
+		frames.push(
+			await sharp(Buffer.from(animFrameSvg(w, h, i, n)))
+				.removeAlpha()
+				.png()
+				.toBuffer()
+		);
+	}
+	return frames;
+}
+
+async function write(name, buf) {
+	writeFileSync(join(OUT, name), buf);
+	return join(OUT, name);
+}
+
+async function meta(name) {
+	// metadata().size is only set for Buffer/Stream input — use the file size.
+	const m = await sharp(join(OUT, name), { pages: -1 }).metadata();
+	m.size = statSync(join(OUT, name)).size;
+	return m;
+}
+
+function assertEq(name, what, got, want) {
+	const ok = Array.isArray(want) ? JSON.stringify(got) === JSON.stringify(want) : got === want;
+	if (!ok)
+		throw new Error(
+			`gen-verify failed: ${name} ${what} = ${JSON.stringify(got)}, expected ${JSON.stringify(want)}`
+		);
+}
+
+function assertRange(name, what, got, min, max) {
+	if (got < min || got > max)
+		throw new Error(`gen-verify failed: ${name} ${what} = ${got}, expected ${min}..${max}`);
+}
+
+// ------------------------------------------------------------------- images
+
+async function generateImages() {
+	// 1. photo-1200x800.jpg — the workhorse. Heavy grain so target-size tests
+	// (100 KB target) actually force a quality drop.
+	{
+		const src = await photoScene(1200, 800, { noise: 90 });
+		await write(
+			'photo-1200x800.jpg',
+			await sharp(src).jpeg({ quality: 85, mozjpeg: true }).toBuffer()
+		);
+		const m = await meta('photo-1200x800.jpg');
+		assertEq('photo-1200x800.jpg', 'format', m.format, 'jpeg');
+		assertEq('photo-1200x800.jpg', 'dims', [m.width, m.height], [1200, 800]);
+		assertRange('photo-1200x800.jpg', 'size', m.size, 60_000, 600_000);
+		manifest['photo-1200x800.jpg'] = { width: 1200, height: 800, size: m.size };
+	}
+
+	// 2. photo-4000x3000.jpg — large-file path (pixel count is what matters:
+	// 12 MP decode + slow AVIF encode for the cancel test; byte size is secondary)
+	{
+		const src = await photoScene(4000, 3000, { noise: 55, seed: 43 });
+		await write(
+			'photo-4000x3000.jpg',
+			await sharp(src).jpeg({ quality: 88, mozjpeg: true }).toBuffer()
+		);
+		const m = await meta('photo-4000x3000.jpg');
+		assertEq('photo-4000x3000.jpg', 'dims', [m.width, m.height], [4000, 3000]);
+		assertRange('photo-4000x3000.jpg', 'size', m.size, 250_000, 9_000_000);
+		manifest['photo-4000x3000.jpg'] = { width: 4000, height: 3000, size: m.size };
+	}
+
+	// 3. photo-progressive.jpg
+	{
+		const src = await photoScene(1200, 800, { seed: 44 });
+		await write(
+			'photo-progressive.jpg',
+			await sharp(src).jpeg({ quality: 85, progressive: true }).toBuffer()
+		);
+		const m = await meta('photo-progressive.jpg');
+		assertEq('photo-progressive.jpg', 'isProgressive', m.isProgressive, true);
+		manifest['photo-progressive.jpg'] = { width: 1200, height: 800 };
+	}
+
+	// 4. photo-exif6.jpg — stored 900×600 landscape, EXIF orientation 6 → displays 600×900.
+	// Display-space design: red marker square top-left + "TOP" banner. We author the
+	// DISPLAY image then rotate 270° to get stored pixels.
+	{
+		const display = `<svg xmlns="http://www.w3.org/2000/svg" width="600" height="900">
+  <rect width="600" height="900" fill="#e2e8f0"/>
+  <rect x="20" y="20" width="80" height="80" fill="#dc2626"/>
+  <text x="300" y="80" text-anchor="middle" font-family="Helvetica, sans-serif" font-weight="bold" font-size="56" fill="#111827">TOP</text>
+  <rect x="60" y="180" width="480" height="640" fill="#3b82f6"/>
+  <text x="300" y="520" text-anchor="middle" font-family="Helvetica, sans-serif" font-size="40" fill="#f8fafc">portrait body</text>
+</svg>`;
+		const displayPng = await sharp(Buffer.from(display)).removeAlpha().png().toBuffer();
+		const storedJpg = await sharp(displayPng)
+			.rotate(270)
+			.jpeg({ quality: 88 })
+			.withMetadata({ orientation: 6 })
+			.toBuffer();
+		await write('photo-exif6.jpg', storedJpg);
+		const m = await meta('photo-exif6.jpg');
+		assertEq('photo-exif6.jpg', 'orientation', m.orientation, 6);
+		assertEq('photo-exif6.jpg', 'stored dims', [m.width, m.height], [900, 600]);
+		manifest['photo-exif6.jpg'] = {
+			storedWidth: 900,
+			storedHeight: 600,
+			displayWidth: 600,
+			displayHeight: 900,
+			markerPoint: [50, 50], // display-space: inside the red square
+			markerColor: [220, 38, 38]
+		};
+	}
+
+	// 5. photo-cmyk.jpg
+	{
+		const src = await photoScene(1000, 700, { seed: 45 });
+		await write(
+			'photo-cmyk.jpg',
+			await sharp(src).toColourspace('cmyk').jpeg({ quality: 85 }).toBuffer()
+		);
+		const m = await meta('photo-cmyk.jpg');
+		assertEq('photo-cmyk.jpg', 'space', m.space, 'cmyk');
+		manifest['photo-cmyk.jpg'] = { width: 1000, height: 700, space: 'cmyk' };
+	}
+
+	// 6. tiny-optimized.jpg — already tight; re-encode at q80 grows → keep-original.
+	{
+		const src = await photoScene(320, 200, { noise: 25, seed: 46 });
+		await write(
+			'tiny-optimized.jpg',
+			await sharp(src).jpeg({ quality: 60, mozjpeg: true }).toBuffer()
+		);
+		const m = await meta('tiny-optimized.jpg');
+		assertRange('tiny-optimized.jpg', 'size', m.size, 1_000, 25_000);
+		manifest['tiny-optimized.jpg'] = { width: 320, height: 200, size: m.size };
+	}
+
+	// 7. photo-1200x800.png — 24-bit photo content
+	{
+		const src = await photoScene(1200, 800, { seed: 47 });
+		await write('photo-1200x800.png', await sharp(src).png().toBuffer());
+		const m = await meta('photo-1200x800.png');
+		assertEq('photo-1200x800.png', 'format', m.format, 'png');
+		assertEq('photo-1200x800.png', 'hasAlpha', m.hasAlpha ?? false, false);
+		manifest['photo-1200x800.png'] = { width: 1200, height: 800, size: m.size };
+	}
+
+	// 8. graphic-alpha.png — transparency; corners guaranteed transparent.
+	{
+		await write(
+			'graphic-alpha.png',
+			await sharp(Buffer.from(alphaGraphicSvg(800, 600)))
+				.png()
+				.toBuffer()
+		);
+		const m = await meta('graphic-alpha.png');
+		assertEq('graphic-alpha.png', 'hasAlpha', m.hasAlpha, true);
+		const raw = await sharp(join(OUT, 'graphic-alpha.png')).ensureAlpha().raw().toBuffer();
+		for (const [x, y] of [
+			[10, 10],
+			[790, 10],
+			[10, 590],
+			[790, 590]
+		]) {
+			const a = raw[(y * 800 + x) * 4 + 3];
+			assertEq('graphic-alpha.png', `alpha@${x},${y}`, a, 0);
+		}
+		manifest['graphic-alpha.png'] = {
+			width: 800,
+			height: 600,
+			transparentPoints: [
+				[10, 10],
+				[790, 10],
+				[10, 590],
+				[790, 590]
+			],
+			opaquePoint: [400, 300]
+		};
+	}
+
+	// 9. palette-64.png
+	{
+		const src = await photoScene(600, 400, { seed: 48 });
+		await write('palette-64.png', await sharp(src).png({ palette: true, colours: 64 }).toBuffer());
+		const m = await meta('palette-64.png');
+		assertEq('palette-64.png', 'format', m.format, 'png');
+		manifest['palette-64.png'] = { width: 600, height: 400 };
+	}
+
+	// 10. png-16bit.png
+	{
+		const src = await photoScene(600, 400, { seed: 49 });
+		await write('png-16bit.png', await sharp(src).toColourspace('rgb16').png().toBuffer());
+		const m = await meta('png-16bit.png');
+		assertEq('png-16bit.png', 'depth', m.depth, 'ushort');
+		manifest['png-16bit.png'] = { width: 600, height: 400, depth: 'ushort' };
+	}
+
+	// 11. png-interlaced.png (Adam7)
+	{
+		const src = await photoScene(600, 400, { seed: 50 });
+		await write('png-interlaced.png', await sharp(src).png({ progressive: true }).toBuffer());
+		const m = await meta('png-interlaced.png');
+		assertEq('png-interlaced.png', 'isProgressive', m.isProgressive, true);
+		manifest['png-interlaced.png'] = { width: 600, height: 400 };
+	}
+
+	// 12. photo-1000x700.webp — lossy
+	{
+		const src = await photoScene(1000, 700, { seed: 51 });
+		await write('photo-1000x700.webp', await sharp(src).webp({ quality: 80 }).toBuffer());
+		const m = await meta('photo-1000x700.webp');
+		assertEq('photo-1000x700.webp', 'format', m.format, 'webp');
+		manifest['photo-1000x700.webp'] = { width: 1000, height: 700, size: m.size };
+	}
+
+	// 13. alpha-lossless.webp
+	{
+		await write(
+			'alpha-lossless.webp',
+			await sharp(Buffer.from(alphaGraphicSvg(800, 600)))
+				.webp({ lossless: true })
+				.toBuffer()
+		);
+		const m = await meta('alpha-lossless.webp');
+		assertEq('alpha-lossless.webp', 'hasAlpha', m.hasAlpha, true);
+		manifest['alpha-lossless.webp'] = {
+			width: 800,
+			height: 600,
+			transparentPoints: [
+				[10, 10],
+				[790, 590]
+			]
+		};
+	}
+
+	// 19. photo-800x600.avif
+	{
+		const src = await photoScene(800, 600, { seed: 52 });
+		await write('photo-800x600.avif', await sharp(src).avif({ quality: 55 }).toBuffer());
+		const m = await meta('photo-800x600.avif');
+		assertEq('photo-800x600.avif', 'format is heif(av1)', m.format, 'heif');
+		manifest['photo-800x600.avif'] = { width: 800, height: 600 };
+	}
+}
+
+// --------------------------------------------------------------- animations
+
+async function generateAnimations() {
+	// 14. anim-12f.gif — 12 frames @ 80 ms
+	{
+		const frames = await animFrames(360, 240, 12);
+		await write(
+			'anim-12f.gif',
+			await sharp(frames, { join: { animated: true } })
+				.gif({ delay: Array(12).fill(80), loop: 0, effort: 7 })
+				.toBuffer()
+		);
+		const m = await meta('anim-12f.gif');
+		assertEq('anim-12f.gif', 'pages', m.pages, 12);
+		manifest['anim-12f.gif'] = {
+			width: 360,
+			height: m.pageHeight ?? 240,
+			pages: 12,
+			delay: m.delay
+		};
+	}
+
+	// 15. anim-fast.gif — 6 frames @ 10 ms (delay-bump test)
+	{
+		const frames = await animFrames(200, 200, 6);
+		await write(
+			'anim-fast.gif',
+			await sharp(frames, { join: { animated: true } })
+				.gif({ delay: Array(6).fill(10), loop: 0, effort: 7 })
+				.toBuffer()
+		);
+		const m = await meta('anim-fast.gif');
+		assertEq('anim-fast.gif', 'pages', m.pages, 6);
+		if (!m.delay || m.delay.some((d) => d > 10))
+			throw new Error(
+				`gen-verify failed: anim-fast.gif delays = ${JSON.stringify(m.delay)}, expected all ≤10`
+			);
+		manifest['anim-fast.gif'] = {
+			width: 200,
+			height: m.pageHeight ?? 200,
+			pages: 6,
+			delay: m.delay
+		};
+	}
+
+	// 16. static.gif — single frame
+	{
+		const src = await photoScene(256, 192, { seed: 53 });
+		await write('static.gif', await sharp(src).gif().toBuffer());
+		const m = await meta('static.gif');
+		assertEq('static.gif', 'pages', m.pages ?? 1, 1);
+		manifest['static.gif'] = { width: 256, height: 192, pages: 1 };
+	}
+
+	// 16b. anim-2f-16600x40.gif — wider than the 16383 px WebP hard cap; the
+	// animated-WebP path must clamp automatically (AN-11), not hard-fail.
+	{
+		const W = 16600;
+		const H = 40;
+		const solid = (r, g, b) =>
+			sharp({ create: { width: W, height: H, channels: 3, background: { r, g, b } } })
+				.png()
+				.toBuffer();
+		const frames = [await solid(220, 60, 40), await solid(40, 90, 220)];
+		await write(
+			'anim-2f-16600x40.gif',
+			await sharp(frames, { join: { animated: true } })
+				.gif({ delay: [200, 200], loop: 0, effort: 1 })
+				.toBuffer()
+		);
+		const m = await meta('anim-2f-16600x40.gif');
+		assertEq('anim-2f-16600x40.gif', 'pages', m.pages, 2);
+		assertEq('anim-2f-16600x40.gif', 'width', m.width, W);
+		manifest['anim-2f-16600x40.gif'] = { width: W, height: m.pageHeight ?? H, pages: 2 };
+	}
+
+	// 17. anim-10f.webp — animated webp input
+	{
+		const frames = await animFrames(300, 300, 10);
+		await write(
+			'anim-10f.webp',
+			await sharp(frames, { join: { animated: true } })
+				.webp({ quality: 85, delay: Array(10).fill(100), loop: 0 })
+				.toBuffer()
+		);
+		const m = await meta('anim-10f.webp');
+		assertEq('anim-10f.webp', 'pages', m.pages, 10);
+		manifest['anim-10f.webp'] = {
+			width: 300,
+			height: m.pageHeight ?? 300,
+			pages: 10,
+			delay: m.delay
+		};
+	}
+
+	// 17½. anim-fast.webp — 6 frames @ 10 ms. Unlike GIF, WebP timing is real:
+	// the app must NOT bump these to 100 ms (AN-10). sharp/libvips silently
+	// writes 100 ms for small webp delays, so the ANMF durations (u24 LE at
+	// payload offset 12) are patched to 10 ms by hand afterwards.
+	{
+		const frames = await animFrames(200, 200, 6);
+		const encoded = await sharp(frames, { join: { animated: true } })
+			.webp({ quality: 85, delay: Array(6).fill(100), loop: 0 })
+			.toBuffer();
+		let at = 12;
+		while (at + 8 <= encoded.length) {
+			const type = encoded.toString('latin1', at, at + 4);
+			const size = encoded.readUInt32LE(at + 4);
+			if (type === 'ANMF') {
+				encoded[at + 8 + 12] = 10; // duration u24 LE → 10 ms
+				encoded[at + 8 + 13] = 0;
+				encoded[at + 8 + 14] = 0;
+			}
+			at += 8 + size + (size % 2);
+		}
+		await write('anim-fast.webp', encoded);
+		const m = await meta('anim-fast.webp');
+		assertEq('anim-fast.webp', 'pages', m.pages, 6);
+		if (!m.delay || m.delay.some((d) => d > 10)) {
+			throw new Error(
+				`gen-verify failed: anim-fast.webp delays = ${JSON.stringify(m.delay)}, expected all ≤10`
+			);
+		}
+		manifest['anim-fast.webp'] = {
+			width: 200,
+			height: m.pageHeight ?? 200,
+			pages: 6,
+			delay: m.delay
+		};
+	}
+
+	// 17¾. apng-3f.png — hand-muxed APNG (sharp/libvips can't write one):
+	// IHDR + acTL + fcTL/IDAT + 2×(fcTL/fdAT), 100 ms per frame, full-frame
+	// replace (dispose 0 / blend 0). sharp reads it as a 1-page PNG, so the
+	// gen-time check is structural; Chromium's ImageDecoder drives it in e2e.
+	{
+		const W = 240;
+		const H = 180;
+		const frames = await animFrames(W, H, 3);
+		const pngs = [];
+		for (const f of frames) {
+			pngs.push(await sharp(f).ensureAlpha().png({ palette: false }).toBuffer());
+		}
+		const chunksOf = (png) => {
+			const out = [];
+			let at = 8;
+			while (at + 8 <= png.length) {
+				const length = png.readUInt32BE(at);
+				const type = png.toString('latin1', at + 4, at + 8);
+				out.push({ type, data: png.subarray(at + 8, at + 8 + length) });
+				at += 12 + length;
+				if (type === 'IEND') break;
+			}
+			return out;
+		};
+		const u32 = (n) => {
+			const b = Buffer.alloc(4);
+			b.writeUInt32BE(n >>> 0);
+			return b;
+		};
+		const u16 = (n) => {
+			const b = Buffer.alloc(2);
+			b.writeUInt16BE(n);
+			return b;
+		};
+		const ihdr = chunksOf(pngs[0]).find((c) => c.type === 'IHDR');
+		const idatOf = (png) =>
+			Buffer.concat(
+				chunksOf(png)
+					.filter((c) => c.type === 'IDAT')
+					.map((c) => c.data)
+			);
+		let seq = 0;
+		const fcTL = () =>
+			pngChunkBytes(
+				'fcTL',
+				Buffer.concat([
+					u32(seq++), // sequence number (shared with fdAT)
+					u32(W),
+					u32(H),
+					u32(0), // x
+					u32(0), // y
+					u16(100), // delay 100/1000 s = 100 ms
+					u16(1000),
+					Buffer.from([0, 0]) // dispose none, blend source
+				])
+			);
+		const parts = [
+			Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+			pngChunkBytes('IHDR', Buffer.from(ihdr.data)),
+			pngChunkBytes('acTL', Buffer.concat([u32(3), u32(0)])), // 3 frames, loop ∞
+			fcTL(),
+			pngChunkBytes('IDAT', idatOf(pngs[0]))
+		];
+		for (const png of pngs.slice(1)) {
+			parts.push(fcTL(), pngChunkBytes('fdAT', Buffer.concat([u32(seq++), idatOf(png)])));
+		}
+		parts.push(pngChunkBytes('IEND', Buffer.alloc(0)));
+		await write('apng-3f.png', Buffer.concat(parts));
+		const m = await meta('apng-3f.png');
+		assertEq('apng-3f.png', 'format', m.format, 'png');
+		assertEq('apng-3f.png', 'width', m.width, W);
+		const raw = readFileSync(join(OUT, 'apng-3f.png')).toString('latin1');
+		assertEq('apng-3f.png', 'hasAcTL', raw.includes('acTL'), true);
+		manifest['apng-3f.png'] = { width: W, height: H, pages: 3, delayMs: 100 };
+	}
+}
+
+// --------------------------------------------------------------------- heic
+
+async function generateHeic() {
+	// 18. iphone-photo.heic via sips (macOS) + PNG preview proxy for the report.
+	const srcPng = await photoScene(1200, 800, { seed: 54 });
+	await write('iphone-photo.heic.preview.png', srcPng);
+	try {
+		execFileSync(
+			'sips',
+			[
+				'-s',
+				'format',
+				'heic',
+				'-s',
+				'formatOptions',
+				'80',
+				join(OUT, 'iphone-photo.heic.preview.png'),
+				'--out',
+				join(OUT, 'iphone-photo.heic')
+			],
+			{ stdio: 'pipe' }
+		);
+		const size = readFileSync(join(OUT, 'iphone-photo.heic')).length;
+		if (size < 1000) throw new Error('sips produced a suspiciously small HEIC');
+		manifest['iphone-photo.heic'] = { width: 1200, height: 800, size, available: true };
+
+		// 18b. iphone-burst.heic — the SAME still with its ftyp major brand
+		// patched to msf1 (image sequence). libheif still decodes the primary
+		// item; the app must emit the "first frame only" warning (HE-04).
+		const burst = Buffer.from(readFileSync(join(OUT, 'iphone-photo.heic')));
+		burst.write('msf1', 8, 'latin1');
+		await write('iphone-burst.heic', burst);
+		manifest['iphone-burst.heic'] = { width: 1200, height: 800, sequenceBrand: 'msf1' };
+		return true;
+	} catch (err) {
+		console.warn(`! sips HEIC generation unavailable (${err.message}) — HEIC tests will skip`);
+		return false;
+	}
+}
+
+// --------------------------------------------------------------------- svgs
+
+function generateSvgs() {
+	const clean = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24">
+<path d="M12 2 2 7v10l10 5 10-5V7z" fill="none" stroke="#2563eb" stroke-width="1.5"/>
+<circle cx="12" cy="12" r="3.5" fill="#f59e0b"/>
+</svg>`;
+	writeFileSync(join(OUT, 'clean-icon.svg'), clean);
+	manifest['clean-icon.svg'] = { size: clean.length };
+
+	// Deliberately filthy: comments, RDF metadata, editor namespaces, 8-decimal
+	// coords, duplicate paths, off-canvas junk, inline styles, verbose ids.
+	const dup = `M100.12345678,200.98765432 C150.11111111,180.22222222 220.33333333,260.44444444 300.55555555,240.66666666 S420.77777777,180.88888888 500.99999999,220.12121212`;
+	const bloated = `<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<!-- Created with a very chatty editor -->
+<!-- TODO: remove this comment before shipping -->
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:cc="http://creativecommons.org/ns#" xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape" xmlns:sodipodi="http://sodipodi.sourceforge.net/DTD/sodipodi-0.0.dtd" width="800" height="600" viewBox="0 0 800 600" inkscape:version="1.3 (0e150ed, 2023-07-21)" sodipodi:docname="bloated.svg">
+  <metadata id="metadata-block-with-a-very-long-identifier">
+    <rdf:RDF>
+      <cc:Work rdf:about="">
+        <dc:format>image/svg+xml</dc:format>
+        <dc:title>Bloated test fixture</dc:title>
+        <dc:creator><cc:Agent><dc:title>Fixture Generator</dc:title></cc:Agent></dc:creator>
+      </cc:Work>
+    </rdf:RDF>
+  </metadata>
+  <sodipodi:namedview id="namedview-junk" pagecolor="#ffffff" bordercolor="#666666" inkscape:zoom="1.4142136" inkscape:cx="400.00000001" inkscape:cy="300.00000002"/>
+  <!-- background layer -->
+  <g id="layer-background-with-quite-a-long-id" inkscape:groupmode="layer" inkscape:label="Background">
+    <rect id="rect-background-0000001" x="0.00000000" y="0.00000000" width="800.00000000" height="600.00000000" style="fill:#eef2ff;fill-opacity:1;stroke:none"/>
+    <rect id="rect-way-off-canvas-junk" x="-2000.12345678" y="-1500.87654321" width="50.00000000" height="50.00000000" style="fill:#ff0000"/>
+  </g>
+  <g id="layer-artwork-also-quite-long" inkscape:groupmode="layer" inkscape:label="Artwork">
+    <path id="path-wave-original-instance" d="${dup}" style="fill:none;stroke:#2563eb;stroke-width:6.12345678;stroke-linecap:round"/>
+    <path id="path-wave-duplicate-instance" d="${dup}" style="fill:none;stroke:#2563eb;stroke-width:6.12345678;stroke-linecap:round"/>
+    <circle id="circle-sun-shape-long-id" cx="620.11223344" cy="140.55667788" r="60.99887766" style="fill:#f59e0b;fill-opacity:0.90000000"/>
+    <rect id="rect-card-shape-long-id" x="120.10101010" y="320.20202020" width="360.30303030" height="180.40404040" rx="18.50505050" style="fill:#ffffff;stroke:#94a3b8;stroke-width:2.60606060"/>
+    <text id="text-label-long-id" x="300.70707070" y="420.80808080" style="font-family:Helvetica, sans-serif;font-size:36.90909090px;fill:#111827" text-anchor="middle">Vector Card</text>
+  </g>
+</svg>`;
+	writeFileSync(join(OUT, 'bloated.svg'), bloated);
+	if (!bloated.includes('<!--') || !bloated.includes('<metadata'))
+		throw new Error('bloated.svg self-check failed');
+	manifest['bloated.svg'] = { size: bloated.length, width: 800, height: 600 };
+}
+
+// --------------------------------------------------------------------- pdfs
+
+const A4 = [595.28, 841.89];
+
+// -------------------------------------------------------- bmp/tiff inputs
+
+async function generateBmpTiff() {
+	// 28. graphic.bmp — hand-written 24-bit BMP (sharp/libvips can't write OR
+	// read BMP) + graphic-bmp-ref.png with IDENTICAL pixels for node-side
+	// verification (same twin idea as the HEIC preview proxy).
+	{
+		const W = 1200;
+		const H = 800;
+		const raw = await sharp(await photoScene(W, H, { seed: 88, noise: 55 }))
+			.removeAlpha()
+			.raw()
+			.toBuffer();
+		const rowSize = Math.ceil((W * 3) / 4) * 4; // rows padded to 4 bytes
+		const pixels = Buffer.alloc(rowSize * H);
+		for (let y = 0; y < H; y++) {
+			for (let x = 0; x < W; x++) {
+				const src = (y * W + x) * 3;
+				const dst = (H - 1 - y) * rowSize + x * 3; // bottom-up, BGR
+				pixels[dst] = raw[src + 2];
+				pixels[dst + 1] = raw[src + 1];
+				pixels[dst + 2] = raw[src];
+			}
+		}
+		const header = Buffer.alloc(54);
+		header.write('BM', 0, 'latin1');
+		header.writeUInt32LE(54 + pixels.length, 2);
+		header.writeUInt32LE(54, 10); // pixel data offset
+		header.writeUInt32LE(40, 14); // BITMAPINFOHEADER
+		header.writeInt32LE(W, 18);
+		header.writeInt32LE(H, 22);
+		header.writeUInt16LE(1, 26); // planes
+		header.writeUInt16LE(24, 28); // bits per pixel
+		header.writeUInt32LE(0, 30); // BI_RGB (uncompressed)
+		header.writeUInt32LE(pixels.length, 34);
+		header.writeInt32LE(2835, 38); // 72 DPI
+		header.writeInt32LE(2835, 42);
+		await write('graphic.bmp', Buffer.concat([header, pixels]));
+		await write(
+			'graphic-bmp-ref.png',
+			await sharp(raw, { raw: { width: W, height: H, channels: 3 } })
+				.png()
+				.toBuffer()
+		);
+		assertEq(
+			'graphic.bmp',
+			'size',
+			readFileSync(join(OUT, 'graphic.bmp')).length,
+			54 + pixels.length
+		);
+		manifest['graphic.bmp'] = { width: W, height: H, ref: 'graphic-bmp-ref.png' };
+	}
+
+	// 29. photo.tiff — LZW TIFF (sharp reads TIFF, so verification is direct).
+	{
+		const src = await photoScene(800, 600, { seed: 89, noise: 30 });
+		await write('photo.tiff', await sharp(src).tiff({ compression: 'lzw' }).toBuffer());
+		const m = await meta('photo.tiff');
+		assertEq('photo.tiff', 'format', m.format, 'tiff');
+		assertEq('photo.tiff', 'width', m.width, 800);
+		manifest['photo.tiff'] = { width: 800, height: 600 };
+	}
+}
+
+// ------------------------------------------- wide gamut + decode-time resize
+
+async function generateColorAndGiants() {
+	// 30. p3-patches.{tiff,png} — pixel-identical Display-P3-tagged twins.
+	// SEMANTICS (probed 2026-07-11): sharp's withIccProfile('p3') CONVERTS the
+	// authored sRGB pixels into P3 space and tags (appearance-preserving
+	// export) — the files physically hold P3-space values (`p3` below), and
+	// their correct sRGB rendering is the authored `srgb`. Beware sharp
+	// read-back: .raw() silently converts tagged input BACK to sRGB, so the
+	// file values here come from utif2 (color-blind decoder, same as the app).
+	// TIFF exercises the WASM path (utif2 + the worker's matrix conversion);
+	// PNG rides createImageBitmap, where Chrome converts — both must land on
+	// `srgb`, and landing on `p3` instead means the conversion didn't run.
+	{
+		const PATCHES = [
+			{ at: [100, 100], srgb: [200, 30, 30] },
+			{ at: [300, 100], srgb: [30, 180, 60] },
+			{ at: [100, 300], srgb: [40, 60, 200] },
+			{ at: [300, 300], srgb: [128, 128, 128] } // neutral: identical in both spaces
+		];
+		const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="400" height="400">
+  <rect x="0" y="0" width="200" height="200" fill="rgb(200,30,30)"/>
+  <rect x="200" y="0" width="200" height="200" fill="rgb(30,180,60)"/>
+  <rect x="0" y="200" width="200" height="200" fill="rgb(40,60,200)"/>
+  <rect x="200" y="200" width="200" height="200" fill="rgb(128,128,128)"/>
+</svg>`;
+		const base = await sharp(Buffer.from(svg)).removeAlpha().toColourspace('srgb').png().toBuffer();
+		await write(
+			'p3-patches.tiff',
+			await sharp(base).withIccProfile('p3').tiff({ compression: 'lzw' }).toBuffer()
+		);
+		await write('p3-patches.png', await sharp(base).withIccProfile('p3').png().toBuffer());
+		for (const name of ['p3-patches.tiff', 'p3-patches.png']) {
+			const m = await meta(name);
+			if (!m.icc) throw new Error(`gen-verify failed: ${name} has no ICC profile`);
+			assertEq(name, 'dims', [m.width, m.height], [400, 400]);
+		}
+		// Read the true FILE values through utif2 (exactly what the app's wasm
+		// path decodes) and sanity-check the export really transformed.
+		const UTIF = (await import('utif2')).default;
+		const tiffBytes = readFileSync(join(OUT, 'p3-patches.tiff'));
+		const ab = tiffBytes.buffer.slice(
+			tiffBytes.byteOffset,
+			tiffBytes.byteOffset + tiffBytes.byteLength
+		);
+		const ifds = UTIF.decode(ab);
+		UTIF.decodeImage(ab, ifds[0]);
+		const rgba = UTIF.toRGBA8(ifds[0]);
+		const patches = PATCHES.map(({ at, srgb }) => {
+			const i = (at[1] * 400 + at[0]) * 4;
+			return { at, srgb, p3: [rgba[i], rgba[i + 1], rgba[i + 2]] };
+		});
+		for (const { at, srgb, p3 } of patches) {
+			const neutral = srgb[0] === srgb[1] && srgb[1] === srgb[2];
+			const moved = p3.some((v, c) => Math.abs(v - srgb[c]) > 4);
+			if (neutral && moved) throw new Error(`gen-verify failed: neutral p3 patch drifted: ${p3}`);
+			if (!neutral && !moved)
+				throw new Error(`gen-verify failed: p3 patch@${at} was not transformed: ${p3}`);
+		}
+		manifest['p3-patches.tiff'] = { width: 400, height: 400, patches };
+		manifest['p3-patches.png'] = { width: 400, height: 400, patches };
+	}
+
+	// 31. giant-photo.jpg — 5600×3800 (21.3 MP) crosses the worker's
+	// FAST_DECODE_MIN_PIXELS gate (20 MP): with a maxDimension set it decodes
+	// straight to target size via createImageBitmap resize options.
+	{
+		const src = await photoScene(5600, 3800, { seed: 90, noise: 45 });
+		await write(
+			'giant-photo.jpg',
+			await sharp(src).jpeg({ quality: 82, mozjpeg: true }).toBuffer()
+		);
+		const m = await meta('giant-photo.jpg');
+		assertEq('giant-photo.jpg', 'dims', [m.width, m.height], [5600, 3800]);
+		manifest['giant-photo.jpg'] = { width: 5600, height: 3800, size: m.size };
+	}
+
+	// 32. giant-exif6.jpg — same pixel count, stored landscape + EXIF
+	// orientation 6 → displays portrait 3800×5600. Exercises the oriented-dims
+	// math of the decode-time downscale (resize dims refer to the ORIENTED
+	// image under imageOrientation:'from-image').
+	{
+		const display = await photoScene(3800, 5600, { seed: 91, noise: 45 });
+		const stored = await sharp(display)
+			.rotate(270)
+			.jpeg({ quality: 82, mozjpeg: true })
+			.withMetadata({ orientation: 6 })
+			.toBuffer();
+		await write('giant-exif6.jpg', stored);
+		const m = await meta('giant-exif6.jpg');
+		assertEq('giant-exif6.jpg', 'orientation', m.orientation, 6);
+		assertEq('giant-exif6.jpg', 'stored dims', [m.width, m.height], [5600, 3800]);
+		manifest['giant-exif6.jpg'] = {
+			storedWidth: 5600,
+			storedHeight: 3800,
+			displayWidth: 3800,
+			displayHeight: 5600
+		};
+	}
+}
+
+// ---------------------------------------------------------------------- zip
+
+async function generateZip() {
+	// 31. bundle.zip — 3 entries incl. one nested path (extraction flattens
+	// names to basenames) — built with fflate, the same library the app uses.
+	{
+		const png = await sharp(await photoScene(64, 48, { seed: 90 }))
+			.png()
+			.toBuffer();
+		const entries = {
+			'readme.txt': new TextEncoder().encode('hello from the fixture zip\n'),
+			'pixel.png': new Uint8Array(png),
+			'docs/nested.txt': new TextEncoder().encode('nested entry\n')
+		};
+		const data = zipSync(entries, { level: 6 });
+		await write('bundle.zip', Buffer.from(data));
+		manifest['bundle.zip'] = {
+			entries: ['readme.txt', 'pixel.png', 'nested.txt'],
+			sizes: { 'readme.txt': entries['readme.txt'].length, 'pixel.png': png.length }
+		};
+	}
+}
+
+// -------------------------------------------------------------------- audio
+
+async function generateAudio() {
+	// 30. tone-3s.wav — deterministic 3 s stereo sine sweep, hand-written PCM
+	// (no encoder dependency; WAV is a 44-byte header + samples).
+	{
+		const SR = 44100;
+		const SECONDS = 3;
+		const CHANNELS = 2;
+		const frames = SR * SECONDS;
+		const data = Buffer.alloc(frames * CHANNELS * 2);
+		for (let i = 0; i < frames; i++) {
+			const t = i / SR;
+			// Two tones + a slow sweep so lossy encoders have real work to do.
+			const left =
+				0.4 * Math.sin(2 * Math.PI * 440 * t) + 0.2 * Math.sin(2 * Math.PI * (880 + 200 * t) * t);
+			const right =
+				0.4 * Math.sin(2 * Math.PI * 554.37 * t) + 0.2 * Math.sin(2 * Math.PI * 330 * t);
+			data.writeInt16LE(Math.round(Math.max(-1, Math.min(1, left)) * 32767), i * 4);
+			data.writeInt16LE(Math.round(Math.max(-1, Math.min(1, right)) * 32767), i * 4 + 2);
+		}
+		const header = Buffer.alloc(44);
+		header.write('RIFF', 0, 'latin1');
+		header.writeUInt32LE(36 + data.length, 4);
+		header.write('WAVE', 8, 'latin1');
+		header.write('fmt ', 12, 'latin1');
+		header.writeUInt32LE(16, 16); // fmt chunk size
+		header.writeUInt16LE(1, 20); // PCM
+		header.writeUInt16LE(CHANNELS, 22);
+		header.writeUInt32LE(SR, 24);
+		header.writeUInt32LE(SR * CHANNELS * 2, 28); // byte rate
+		header.writeUInt16LE(CHANNELS * 2, 32); // block align
+		header.writeUInt16LE(16, 34); // bits per sample
+		header.write('data', 36, 'latin1');
+		header.writeUInt32LE(data.length, 40);
+		await write('tone-3s.wav', Buffer.concat([header, data]));
+		const size = readFileSync(join(OUT, 'tone-3s.wav')).length;
+		assertEq('tone-3s.wav', 'size', size, 44 + frames * CHANNELS * 2);
+		manifest['tone-3s.wav'] = {
+			durationSec: SECONDS,
+			sampleRate: SR,
+			channels: CHANNELS,
+			size,
+			// Tone table for the Goertzel probes (e2e/helpers.ts audioMetricsInPage);
+			// e2e/audio-fixtures.ts encodes the SAME plan — keep the twins in sync.
+			// The sweep term sin(2π(880+200t)t) has instantaneous frequency
+			// 880+400t → 880..2080 Hz over the 3 s; 3 kHz sits safely above it.
+			tones: {
+				left: [{ hz: 440, amp: 0.4 }],
+				right: [
+					{ hz: 554.37, amp: 0.4 },
+					{ hz: 330, amp: 0.2 }
+				],
+				sweep: { channel: 'left', fromHz: 880, toHz: 2080, amp: 0.2 },
+				controlHz: 3000
+			}
+		};
+	}
+
+	// 30b. noise-10s.wav — seeded white noise: the HARDEST content for a lossy
+	// audio encoder, so an ABR/VBR AAC encode must spend close to the
+	// requested bitrate. Regression net for "bitrate pills are decorative"
+	// (probe 2026-07-11 on real music: 96→99%, 192→91%, 256→94% of request;
+	// pure tones legitimately undershoot to ~53 kbps — that is VBR working).
+	{
+		const SR = 44100;
+		const SECONDS = 10;
+		const CHANNELS = 2;
+		const frames = SR * SECONDS;
+		const data = Buffer.alloc(frames * CHANNELS * 2);
+		// Deterministic LCG (Numerical Recipes constants) — fixtures must not
+		// change across regenerations.
+		let state = 0xc0ffee;
+		const next = () => {
+			state = (Math.imul(state, 1664525) + 1013904223) >>> 0;
+			return state / 0xffffffff - 0.5;
+		};
+		for (let i = 0; i < frames; i++) {
+			data.writeInt16LE(Math.round(next() * 0.9 * 32767), i * 4);
+			data.writeInt16LE(Math.round(next() * 0.9 * 32767), i * 4 + 2);
+		}
+		const header = Buffer.alloc(44);
+		header.write('RIFF', 0, 'latin1');
+		header.writeUInt32LE(36 + data.length, 4);
+		header.write('WAVE', 8, 'latin1');
+		header.write('fmt ', 12, 'latin1');
+		header.writeUInt32LE(16, 16);
+		header.writeUInt16LE(1, 20); // PCM
+		header.writeUInt16LE(CHANNELS, 22);
+		header.writeUInt32LE(SR, 24);
+		header.writeUInt32LE(SR * CHANNELS * 2, 28);
+		header.writeUInt16LE(CHANNELS * 2, 32);
+		header.writeUInt16LE(16, 34);
+		header.write('data', 36, 'latin1');
+		header.writeUInt32LE(data.length, 40);
+		await write('noise-10s.wav', Buffer.concat([header, data]));
+		assertEq(
+			'noise-10s.wav',
+			'size',
+			readFileSync(join(OUT, 'noise-10s.wav')).length,
+			44 + frames * CHANNELS * 2
+		);
+		manifest['noise-10s.wav'] = { durationSec: SECONDS, sampleRate: SR, channels: CHANNELS };
+	}
+}
+
+async function generatePdfs() {
+	// 22. text-3pages.pdf — vector text only
+	{
+		const doc = await PDFDocument.create();
+		const font = await doc.embedFont(StandardFonts.Helvetica);
+		const bold = await doc.embedFont(StandardFonts.HelveticaBold);
+		for (let p = 1; p <= 3; p++) {
+			const page = doc.addPage(A4);
+			page.drawText(`Fixture document — page ${p}`, { x: 50, y: 780, size: 20, font: bold });
+			for (let line = 0; line < 38; line++) {
+				page.drawText(
+					`Paragraph ${p}.${line + 1}: the quick brown fox jumps over the lazy dog, 0123456789, verifying vector text compression.`,
+					{ x: 50, y: 740 - line * 18, size: 10, font, color: rgb(0.12, 0.12, 0.15) }
+				);
+			}
+		}
+		writeFileSync(join(OUT, 'text-3pages.pdf'), await doc.save());
+		const check = await PDFDocument.load(readFileSync(join(OUT, 'text-3pages.pdf')));
+		assertEq('text-3pages.pdf', 'pageCount', check.getPageCount(), 3);
+		manifest['text-3pages.pdf'] = { pages: 3 };
+	}
+
+	// 23. image-heavy.pdf — 3 A4 pages, full-bleed ~300 DPI JPEGs (compressible)
+	{
+		const doc = await PDFDocument.create();
+		for (let p = 0; p < 3; p++) {
+			const jpg = await sharp(await photoScene(2480, 3508, { noise: 55, seed: 60 + p }))
+				.jpeg({ quality: 90 })
+				.toBuffer();
+			const img = await doc.embedJpg(jpg);
+			const page = doc.addPage(A4);
+			page.drawImage(img, { x: 0, y: 0, width: A4[0], height: A4[1] });
+		}
+		writeFileSync(join(OUT, 'image-heavy.pdf'), await doc.save());
+		const bytes = readFileSync(join(OUT, 'image-heavy.pdf'));
+		const check = await PDFDocument.load(bytes);
+		assertEq('image-heavy.pdf', 'pageCount', check.getPageCount(), 3);
+		assertRange('image-heavy.pdf', 'size', bytes.length, 2_000_000, 12_000_000);
+		manifest['image-heavy.pdf'] = { pages: 3, size: bytes.length };
+	}
+
+	// 24. pages-12.pdf — page N is (400+N) pt wide → order/selection fingerprint
+	{
+		const doc = await PDFDocument.create();
+		const bold = await doc.embedFont(StandardFonts.HelveticaBold);
+		for (let n = 1; n <= 12; n++) {
+			const page = doc.addPage([400 + n, 300]);
+			page.drawText(String(n), { x: 150, y: 90, size: 140, font: bold, color: rgb(0.1, 0.3, 0.7) });
+		}
+		writeFileSync(join(OUT, 'pages-12.pdf'), await doc.save());
+		const check = await PDFDocument.load(readFileSync(join(OUT, 'pages-12.pdf')));
+		assertEq('pages-12.pdf', 'pageCount', check.getPageCount(), 12);
+		assertEq(
+			'pages-12.pdf',
+			'widths',
+			check.getPages().map((p) => Math.round(p.getWidth())),
+			Array.from({ length: 12 }, (_, i) => 401 + i)
+		);
+		manifest['pages-12.pdf'] = { pages: 12, widths: Array.from({ length: 12 }, (_, i) => 401 + i) };
+	}
+
+	// 25½. metadata.pdf — DOCINFO + catalog XMP stream; the strip-metadata spec
+	// (P-08) asserts BOTH are gone after compression. Sentinel strings are
+	// unique so raw byte searches can't false-positive on page content. The
+	// embedded high-DPI JPEG matters: without compressible content, gs output
+	// grows and the keep-original guard would hand back the unstripped input.
+	{
+		const doc = await PDFDocument.create();
+		const font = await doc.embedFont(StandardFonts.Helvetica);
+		const page = doc.addPage(A4);
+		page.drawText('Metadata fixture — the page content itself is boring.', {
+			x: 50,
+			y: 780,
+			size: 14,
+			font
+		});
+		// ~600 DPI at the drawn size — even Low (300 DPI cap) downsamples, so
+		// every level genuinely shrinks and the keep-original guard stays out.
+		const jpg = await sharp(await photoScene(4960, 3200, { noise: 55, seed: 77 }))
+			.jpeg({ quality: 90 })
+			.toBuffer();
+		const img = await doc.embedJpg(jpg);
+		page.drawImage(img, { x: 0, y: 100, width: A4[0], height: 384 });
+		doc.setTitle('FixtureSecretTitle');
+		doc.setAuthor('FixtureSecretAuthor');
+		const xmp = [
+			'<?xpacket begin="﻿" id="W5M0MpCehiHzreSzNTczkc9d"?>',
+			'<x:xmpmeta xmlns:x="adobe:ns:meta/">',
+			'<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">',
+			'<rdf:Description xmlns:dc="http://purl.org/dc/elements/1.1/">',
+			'<dc:title><rdf:Alt><rdf:li xml:lang="x-default">FixtureSecretTitle</rdf:li></rdf:Alt></dc:title>',
+			'<dc:creator><rdf:Seq><rdf:li>FixtureSecretAuthor</rdf:li></rdf:Seq></dc:creator>',
+			'</rdf:Description></rdf:RDF></x:xmpmeta>',
+			'<?xpacket end="w"?>'
+		].join('\n');
+		const stream = doc.context.stream(Buffer.from(xmp, 'utf8'), {
+			Type: 'Metadata',
+			Subtype: 'XML'
+		});
+		doc.catalog.set(PDFName.of('Metadata'), doc.context.register(stream));
+		writeFileSync(join(OUT, 'metadata.pdf'), await doc.save());
+
+		const bytes = readFileSync(join(OUT, 'metadata.pdf'));
+		const raw = bytes.toString('latin1');
+		assertEq('metadata.pdf', 'hasXmp', raw.includes('xpacket'), true);
+		assertEq('metadata.pdf', 'hasXmpTitle', raw.includes('FixtureSecretTitle'), true);
+		const check = await PDFDocument.load(bytes, { updateMetadata: false });
+		assertEq('metadata.pdf', 'docInfoTitle', check.getTitle(), 'FixtureSecretTitle');
+		manifest['metadata.pdf'] = { pages: 1, secret: 'FixtureSecretTitle' };
+	}
+
+	// 25. merge-a/b/c.pdf — unique page sizes = merge/reorder fingerprint
+	{
+		const specs = [
+			{ name: 'merge-a.pdf', size: [595, 842], pages: ['A1', 'A2'] },
+			{ name: 'merge-b.pdf', size: [612, 792], pages: ['B1'] },
+			{ name: 'merge-c.pdf', size: [500, 500], pages: ['C1', 'C2'] }
+		];
+		for (const spec of specs) {
+			const doc = await PDFDocument.create();
+			const bold = await doc.embedFont(StandardFonts.HelveticaBold);
+			for (const label of spec.pages) {
+				const page = doc.addPage(spec.size);
+				page.drawText(label, {
+					x: spec.size[0] / 2 - 90,
+					y: spec.size[1] / 2 - 60,
+					size: 120,
+					font: bold,
+					color: rgb(0.75, 0.2, 0.2)
+				});
+			}
+			writeFileSync(join(OUT, spec.name), await doc.save());
+			const check = await PDFDocument.load(readFileSync(join(OUT, spec.name)));
+			assertEq(spec.name, 'pageCount', check.getPageCount(), spec.pages.length);
+			manifest[spec.name] = { pages: spec.pages.length, pageWidth: spec.size[0] };
+		}
+	}
+}
+
+// ------------------------------------------------------------------- errors
+
+// ------------------------------------------------------------- exif fixtures
+
+// Hand-built big-endian TIFF — deliberately independent of the app's own
+// EXIF writer/parser so tests never verify the code with itself.
+function buildTestExifTiff({ make, model, dateTimeOriginal, orientation, gps }) {
+	const u16 = (n) => [(n >> 8) & 0xff, n & 0xff];
+	const u32 = (n) => [(n >>> 24) & 0xff, (n >>> 16) & 0xff, (n >>> 8) & 0xff, n & 0xff];
+	const ascii = (s) => [...Buffer.from(s + '\0', 'latin1')];
+
+	const ifd0Entries = [];
+	const heap = [];
+	let exifIfd = null;
+	let gpsIfd = null;
+
+	const ifd0Count =
+		(make ? 1 : 0) +
+		(model ? 1 : 0) +
+		(orientation ? 1 : 0) +
+		(dateTimeOriginal ? 1 : 0) +
+		(gps ? 1 : 0);
+	const ifd0Size = 2 + ifd0Count * 12 + 4;
+	const exifIfdAt = 8 + ifd0Size;
+	const exifIfdSize = dateTimeOriginal ? 2 + 12 + 4 : 0;
+	const gpsIfdAt = exifIfdAt + exifIfdSize;
+	const gpsIfdSize = gps ? 2 + 4 * 12 + 4 : 0;
+	let heapAt = gpsIfdAt + gpsIfdSize;
+
+	const push = (tag, type, count, value) =>
+		ifd0Entries.push([...u16(tag), ...u16(type), ...u32(count), ...value]);
+	const heapAscii = (s) => {
+		const bytes = ascii(s);
+		const at = heapAt;
+		heap.push(...bytes);
+		heapAt += bytes.length;
+		return { at, length: bytes.length };
+	};
+
+	if (make) {
+		const { at, length } = heapAscii(make);
+		push(0x010f, 2, length, u32(at));
+	}
+	if (model) {
+		const { at, length } = heapAscii(model);
+		push(0x0110, 2, length, u32(at));
+	}
+	if (orientation) push(0x0112, 3, 1, [...u16(orientation), 0, 0]);
+	if (dateTimeOriginal) push(0x8769, 4, 1, u32(exifIfdAt));
+	if (gps) push(0x8825, 4, 1, u32(gpsIfdAt));
+
+	if (dateTimeOriginal) {
+		const { at, length } = heapAscii(dateTimeOriginal);
+		exifIfd = [...u16(1), ...u16(0x9003), ...u16(2), ...u32(length), ...u32(at), ...u32(0)];
+	}
+	if (gps) {
+		const rational = (deg) => {
+			const d = Math.floor(deg);
+			const m = Math.floor((deg - d) * 60);
+			const s = Math.round(((deg - d) * 60 - m) * 60 * 1000);
+			return [...u32(d), ...u32(1), ...u32(m), ...u32(1), ...u32(s), ...u32(1000)];
+		};
+		const latAt = heapAt;
+		heap.push(...rational(Math.abs(gps.lat)));
+		heapAt += 24;
+		const lonAt = heapAt;
+		heap.push(...rational(Math.abs(gps.lon)));
+		heapAt += 24;
+		gpsIfd = [
+			...u16(4),
+			...u16(0x0001),
+			...u16(2),
+			...u32(2),
+			gps.lat >= 0 ? 0x4e : 0x53,
+			0,
+			0,
+			0,
+			...u16(0x0002),
+			...u16(5),
+			...u32(3),
+			...u32(latAt),
+			...u16(0x0003),
+			...u16(2),
+			...u32(2),
+			gps.lon >= 0 ? 0x45 : 0x57,
+			0,
+			0,
+			0,
+			...u16(0x0004),
+			...u16(5),
+			...u32(3),
+			...u32(lonAt),
+			...u32(0)
+		];
+	}
+
+	return Buffer.from([
+		0x4d,
+		0x4d,
+		0x00,
+		0x2a,
+		...u32(8),
+		...u16(ifd0Count),
+		...ifd0Entries.flat(),
+		...u32(0),
+		...(exifIfd ?? []),
+		...(gpsIfd ?? []),
+		...heap
+	]);
+}
+
+function jpegSegment(marker, payload) {
+	const body = Buffer.isBuffer(payload) ? payload : Buffer.from(payload, 'latin1');
+	return Buffer.concat([
+		Buffer.from([0xff, marker, (body.length + 2) >> 8, (body.length + 2) & 0xff]),
+		body
+	]);
+}
+
+/** Splices raw segments right after SOI (before whatever sharp wrote). */
+function spliceJpegSegments(jpeg, segments) {
+	return Buffer.concat([jpeg.subarray(0, 2), ...segments, jpeg.subarray(2)]);
+}
+
+function pngChunkBytes(type, payload) {
+	const body = Buffer.isBuffer(payload) ? payload : Buffer.from(payload, 'latin1');
+	const typeAndData = Buffer.concat([Buffer.from(type, 'latin1'), body]);
+	const length = Buffer.alloc(4);
+	length.writeUInt32BE(body.length);
+	const crc = Buffer.alloc(4);
+	crc.writeUInt32BE(crc32(typeAndData) >>> 0);
+	return Buffer.concat([length, typeAndData, crc]);
+}
+
+async function generateExifFixtures() {
+	const GPS = { lat: 46.0511, lon: 14.5051 };
+	const exifTiff = buildTestExifTiff({
+		make: 'Apple',
+		model: 'Apple iPhone 15 Pro',
+		dateTimeOriginal: '2026:05:14 09:30:00',
+		orientation: 1,
+		gps: GPS
+	});
+	const exifApp1 = jpegSegment(0xe1, Buffer.concat([Buffer.from('Exif\0\0', 'latin1'), exifTiff]));
+	const xmpApp1 = jpegSegment(
+		0xe1,
+		'http://ns.adobe.com/xap/1.0/\0<x:xmpmeta xmlns:x="adobe:ns:meta/"/>'
+	);
+	const comment = jpegSegment(0xfe, 'shot on my phone');
+
+	// 1. JPEG with EXIF (GPS + camera + date) + XMP + comment.
+	{
+		const base = await sharp(await photoScene(800, 600, { seed: 77 }))
+			.jpeg({ quality: 85 })
+			.toBuffer();
+		const spliced = spliceJpegSegments(base, [exifApp1, xmpApp1, comment]);
+		await write('exif-gps.jpg', spliced);
+		const m = await meta('exif-gps.jpg');
+		if (!m.exif) throw new Error('gen-verify failed: exif-gps.jpg has no EXIF after splice');
+		manifest['exif-gps.jpg'] = { width: 800, height: 600, gps: GPS, make: 'Apple', size: m.size };
+	}
+
+	// 2. JPEG with an ICC profile + EXIF (for the removeIcc toggle test).
+	{
+		const base = await sharp(await photoScene(600, 400, { seed: 78 }))
+			.withIccProfile('p3')
+			.jpeg({ quality: 85 })
+			.toBuffer();
+		const spliced = spliceJpegSegments(base, [exifApp1]);
+		await write('exif-icc.jpg', spliced);
+		const m = await meta('exif-icc.jpg');
+		if (!m.icc) throw new Error('gen-verify failed: exif-icc.jpg has no ICC profile');
+		if (!m.exif) throw new Error('gen-verify failed: exif-icc.jpg has no EXIF');
+		manifest['exif-icc.jpg'] = { width: 600, height: 400 };
+	}
+
+	// 3. PNG with eXIf (orientation 6 + camera) and text chunks.
+	{
+		const base = await sharp(await photoScene(400, 300, { seed: 79 }))
+			.png()
+			.toBuffer();
+		const eXIf = pngChunkBytes('eXIf', buildTestExifTiff({ make: 'Canon', orientation: 6 }));
+		const tEXt = pngChunkBytes('tEXt', 'Author\0Nik');
+		const ihdrEnd = 8 + 25; // signature + IHDR chunk (13-byte payload)
+		const spliced = Buffer.concat([base.subarray(0, ihdrEnd), eXIf, tEXt, base.subarray(ihdrEnd)]);
+		await write('text-exif.png', spliced);
+		const m = await meta('text-exif.png');
+		if (m.orientation !== 6) throw new Error('gen-verify failed: text-exif.png orientation not 6');
+		manifest['text-exif.png'] = { width: 400, height: 300, orientation: 6 };
+	}
+
+	// 4. WebP with an EXIF chunk (hand-built VP8X wrapper — sharp's EXIF
+	//    support for webp varies, RIFF splicing doesn't).
+	{
+		const base = await sharp(await photoScene(400, 300, { seed: 80 }))
+			.webp({ quality: 85 })
+			.toBuffer();
+		const imageChunks = base.subarray(12); // after RIFF....WEBP
+		const vp8x = Buffer.alloc(18);
+		vp8x.write('VP8X', 0, 'latin1');
+		vp8x.writeUInt32LE(10, 4);
+		vp8x[8] = 0x08; // EXIF flag
+		vp8x.writeUIntLE(400 - 1, 12, 3);
+		vp8x.writeUIntLE(300 - 1, 15, 3);
+		const tiff = buildTestExifTiff({ make: 'Google', orientation: 6 });
+		const exifChunk = Buffer.concat([
+			Buffer.from('EXIF', 'latin1'),
+			(() => {
+				const b = Buffer.alloc(4);
+				b.writeUInt32LE(tiff.length);
+				return b;
+			})(),
+			tiff,
+			tiff.length % 2 ? Buffer.from([0]) : Buffer.alloc(0)
+		]);
+		const body = Buffer.concat([vp8x, imageChunks, exifChunk]);
+		const out = Buffer.alloc(12 + body.length);
+		out.write('RIFF', 0, 'latin1');
+		out.writeUInt32LE(4 + body.length, 4);
+		out.write('WEBP', 8, 'latin1');
+		body.copy(out, 12);
+		await write('exif.webp', out);
+		const m = await meta('exif.webp');
+		if (!m.exif) throw new Error('gen-verify failed: exif.webp has no EXIF');
+		manifest['exif.webp'] = { width: 400, height: 300, orientation: m.orientation ?? null };
+	}
+}
+
+function generateErrorFiles() {
+	const rand = mulberry32(999);
+	const junk = Buffer.alloc(256);
+	for (let i = 0; i < junk.length; i++) junk[i] = Math.floor(rand() * 256);
+	junk[0] = 0x00; // ensure no accidental valid magic bytes
+	junk[1] = 0x01;
+	writeFileSync(join(OUT, 'corrupt.jpg'), junk);
+	writeFileSync(join(OUT, 'corrupt.pdf'), junk);
+	writeFileSync(join(OUT, 'notes.txt'), 'Just some plain text notes.\nNot an image, not a PDF.\n');
+	manifest['corrupt.jpg'] = { size: 256 };
+	manifest['corrupt.pdf'] = { size: 256 };
+	manifest['notes.txt'] = {};
+}
+
+// --------------------------------------------------------------------- main
+
+const t0 = Date.now();
+console.log(`generating fixtures → ${OUT}`);
+await generateImages();
+console.log('  images ✓');
+await generateAnimations();
+console.log('  animations ✓');
+const heicAvailable = await generateHeic();
+console.log('  heic ✓');
+generateSvgs();
+console.log('  svgs ✓');
+await generatePdfs();
+
+await generateAudio();
+
+await generateBmpTiff();
+
+await generateColorAndGiants();
+console.log('  color + giants ✓');
+
+await generateZip();
+console.log('  pdfs ✓');
+await generateExifFixtures();
+console.log('  exif ✓');
+generateErrorFiles();
+console.log('  error files ✓');
+
+writeFileSync(
+	MANIFEST,
+	JSON.stringify(
+		{
+			genHash: GEN_HASH,
+			generatedWith: `sharp ${sharp.versions?.sharp ?? '?'}`,
+			heicAvailable,
+			files: manifest
+		},
+		null,
+		'\t'
+	)
+);
+console.log(`done in ${((Date.now() - t0) / 1000).toFixed(1)}s — manifest: ${MANIFEST}`);

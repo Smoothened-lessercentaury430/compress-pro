@@ -1,0 +1,180 @@
+/**
+ * Open Graph image generator — static/og.jpg + static/og/<slug>.jpg (1200×630).
+ *
+ * Copy mirrors the table in docs/og-images.md (the human-readable source of
+ * truth); edit there, then re-run. Rendering is deterministic and offline:
+ * Playwright Chromium renders an HTML template at deviceScaleFactor 2 (the
+ * Plus Jakarta Sans + Geist Mono variable fonts are embedded as data:
+ * URLs — file:// fonts are CORS-blocked from setContent's about:blank origin)
+ * and sharp downscales the screenshot to a 1200×630 JPEG.
+ *
+ * Design mirrors the app's nameplate-on-canvas hero: paper-grain canvas
+ * (the same feTurbulence mask as layout.css's .canvas-grain), display
+ * headline, and Geist Mono uppercase chips — monochrome throughout, like
+ * the site (the layout.css tokens, light scheme).
+ *
+ * Usage: pnpm og   (node scripts/generate-og.mjs)
+ */
+import { mkdirSync, readFileSync, statSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { chromium } from '@playwright/test';
+import sharp from 'sharp';
+
+const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
+const fontDataUrl = (path) =>
+	`data:font/woff2;base64,${readFileSync(join(ROOT, 'node_modules', path)).toString('base64')}`;
+const sansUrl = fontDataUrl(
+	'@fontsource-variable/plus-jakarta-sans/files/plus-jakarta-sans-latin-wght-normal.woff2'
+);
+const monoUrl = fontDataUrl(
+	'@fontsource-variable/geist-mono/files/geist-mono-latin-wght-normal.woff2'
+);
+
+// [file, headline, subline] — keep in sync with docs/og-images.md.
+const PAGES = [
+	['og.jpg', 'Compress anything.', 'Images, video, audio & PDFs — private, in your browser.'],
+	[
+		'og/compress-pdf.jpg',
+		'Compress PDFs.',
+		'Hit 2 MB exactly — compressed in your browser. Never uploaded.'
+	],
+	[
+		'og/compress-video.jpg',
+		'Compress video.',
+		'MP4 & WebM under any size limit — encoded on your device.'
+	],
+	['og/compress-jpg.jpg', 'Compress JPGs.', 'Quality sliders, target sizes, batches — all local.'],
+	['og/compress-png.jpg', 'Compress PNGs.', 'Lossless or tiny — your pixels never leave.'],
+	['og/compress-webp.jpg', 'Compress WebP.', 'Still or animated — re-encoded on your device.'],
+	['og/compress-gif.jpg', 'Compress GIFs.', 'Keep the animation, lose the megabytes.'],
+	['og/compress-heic.jpg', 'Compress HEIC.', 'iPhone photos, shrunk locally.'],
+	['og/compress-svg.jpg', 'Compress SVGs.', 'Minified locally — your artwork stays yours.'],
+	['og/remove-exif.jpg', 'Remove EXIF.', 'See what your photos reveal — then wipe it, locally.'],
+	['og/heic-to-jpg.jpg', 'HEIC → JPG', 'iPhone photos that open anywhere. Converted locally.'],
+	['og/webp-to-jpg.jpg', 'WebP → JPG', 'For every app that still wants JPG. No uploads.'],
+	['og/webp-to-png.jpg', 'WebP → PNG', 'Lossless, transparency intact — in your browser.'],
+	['og/avif-to-jpg.jpg', 'AVIF → JPG', 'The newest format, made universal. Locally.'],
+	['og/png-to-jpg.jpg', 'PNG → JPG', 'Photos 5–10× smaller. Flattened to white, never uploaded.'],
+	['og/jpg-to-webp.jpg', 'JPG → WebP', '~30% smaller at the same quality.'],
+	['og/png-to-webp.jpg', 'PNG → WebP', 'Smaller files, alpha preserved.'],
+	['og/jpg-to-pdf.jpg', 'JPG → PDF', 'Photos into one PDF — built in your browser.'],
+	['og/pdf-to-jpg.jpg', 'PDF → JPG', 'Every page becomes an image. Rendered locally.'],
+	['og/mov-to-mp4.jpg', 'MOV → MP4', 'iPhone video that plays everywhere.'],
+	['og/webm-to-mp4.jpg', 'WebM → MP4', 'For Apple devices, TVs and editors.'],
+	['og/mkv-to-mp4.jpg', 'MKV → MP4', 'Universal playback, converted on-device.'],
+	['og/mp4-to-webm.jpg', 'MP4 → WebM', 'Smaller video for the web. Converted locally.'],
+	['og/compress-audio.jpg', 'Compress audio.', 'MP3, M4A, WAV & OGG — encoded on your device.'],
+	['og/zip-files.jpg', 'Zip & Unzip.', 'Archives created and opened locally. No upload.'],
+	['og/unlock-pdf.jpg', 'Unlock PDFs.', 'Your password never leaves your device.'],
+	['og/protect-pdf.jpg', 'Protect PDFs.', 'Set a password — encrypted on your device.'],
+	['og/video-to-gif.jpg', 'Video → GIF', 'Clips become loops — right in your browser.'],
+	['og/gif-to-mp4.jpg', 'GIF → MP4', 'Same loop, a tenth of the bytes.'],
+	['og/mp4-to-mp3.jpg', 'MP4 → MP3', 'Pull the audio out of any video. Locally.'],
+	['og/wav-to-mp3.jpg', 'WAV → MP3', 'Huge recordings, made shareable.'],
+	['og/bmp-to-jpg.jpg', 'BMP → JPG', 'Raw bitmaps, 10–20× smaller.'],
+	['og/tiff-to-jpg.jpg', 'TIFF → JPG', 'Scans that fit in an email. Converted locally.'],
+	['og/png-to-ico.jpg', 'PNG → ICO', 'A multi-size favicon in one click.'],
+	['og/merge-pdf.jpg', 'Merge PDFs.', 'Many documents into one — reordered, never uploaded.'],
+	['og/split-pdf.jpg', 'Split PDFs.', 'Extract or remove pages with ranges like 1-3,7. Local.'],
+	['og/compress-mp4.jpg', 'Compress MP4.', 'Hit 10 MB for Discord — encoded on your device.'],
+	['og/resize-image.jpg', 'Resize images.', 'Cap the longest side — aspect kept, resized locally.'],
+	['og/png-to-pdf.jpg', 'PNG → PDF', 'Screenshots into one document. Assembled locally.'],
+	['og/mp4-to-gif.jpg', 'MP4 → GIF', 'Looping GIFs, no watermark — made in your browser.'],
+	['og/pdf-to-png.jpg', 'PDF → PNG', 'Lossless page renders — made in your browser.'],
+	['og/heic-to-png.jpg', 'HEIC → PNG', 'iPhone photos, converted lossless. Locally.'],
+	['og/m4a-to-mp3.jpg', 'M4A → MP3', 'Voice memos that play anywhere. No upload.'],
+	[
+		'og/compress-image.jpg',
+		'Compress any image.',
+		'JPG, PNG, WebP, HEIC & more — smaller on your device.'
+	],
+	[
+		'og/compress-jpg-to-100kb.jpg',
+		'JPG under 100 KB.',
+		'Type the cap — the best quality that fits, locally.'
+	],
+	['og/jpg-to-ico.jpg', 'JPG → ICO', 'Any logo or photo becomes a favicon. Locally.'],
+	['og/svg-to-png.jpg', 'SVG → PNG', 'Vector art rendered crisp at any size. Locally.'],
+	['og/svg-to-ico.jpg', 'SVG → ICO', 'Vector-sharp favicons — made in your browser.']
+];
+
+// favicon.svg glyph with the light-scheme colors hardcoded (no media queries here).
+const ICON = `<svg width="72" height="72" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg"><rect fill="#0b0c0e" width="32" height="32" rx="8"/><g fill="none" stroke="#ffffff" stroke-width="2.6" stroke-linecap="butt" stroke-linejoin="miter"><path d="M11 6.5l5 5 5-5"/><path d="M7 16h18"/><path d="M11 25.5l5-5 5 5"/></g></svg>`;
+
+const esc = (s) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+
+const CHIPS = ['compress-pro.com', 'free', 'private', 'no ads'];
+
+const html = (headline, subline) => `<!doctype html>
+<html><head><meta charset="utf-8"><style>
+@font-face {
+	font-family: 'PJS';
+	src: url('${sansUrl}') format('woff2-variations');
+	font-weight: 200 800;
+}
+@font-face {
+	font-family: 'JBM';
+	src: url('${monoUrl}') format('woff2-variations');
+	font-weight: 100 800;
+}
+* { margin: 0; box-sizing: border-box; }
+body {
+	position: relative;
+	width: 1200px; height: 630px; padding: 72px 80px;
+	display: flex; flex-direction: column;
+	background: #f1f2f4; color: #0b0c0e;
+	font-family: 'PJS', system-ui, sans-serif;
+	-webkit-font-smoothing: antialiased;
+}
+/* Paper grain — .canvas-grain::before from layout.css, light-scheme values
+   (--app-ink #0b0c0e, --app-grain-alpha 0.05) baked in. mask-size is 2× the
+   site's 240px: at deviceScaleFactor 2 the noise texel would be 1px in the
+   final 1200×630 image and mozjpeg quantizes that away entirely (flat gray);
+   at 480px the texel lands at 2px and survives — same grain a retina display
+   shows. */
+body::before {
+	content: '';
+	position: absolute;
+	inset: 0;
+	z-index: -1;
+	background: #0b0c0e;
+	opacity: 0.05;
+	mask-image: url("data:image/svg+xml,%3Csvg%20xmlns%3D'http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg'%20width%3D'240'%20height%3D'240'%3E%3Cfilter%20id%3D'n'%3E%3CfeTurbulence%20type%3D'fractalNoise'%20baseFrequency%3D'0.8'%20numOctaves%3D'3'%20stitchTiles%3D'stitch'%2F%3E%3C%2Ffilter%3E%3Crect%20width%3D'240'%20height%3D'240'%20filter%3D'url(%23n)'%2F%3E%3C%2Fsvg%3E");
+	mask-size: 480px 480px;
+}
+.brand { display: flex; align-items: center; gap: 20px; font-size: 38px; font-weight: 600; letter-spacing: -0.02em; }
+main { flex: 1; display: flex; flex-direction: column; justify-content: center; }
+h1 { font-size: 96px; font-weight: 600; letter-spacing: -0.03em; line-height: 1.06; }
+p { margin-top: 26px; font-size: 34px; font-weight: 500; line-height: 1.35; color: #5d636b; max-width: 980px; }
+.chips { display: flex; gap: 14px; }
+.chip {
+	padding: 12px 26px; border-radius: 999px;
+	background: #ffffff; box-shadow: inset 0 0 0 1px rgb(0 0 0 / 0.12);
+	font-family: 'JBM', monospace; font-size: 21px; font-weight: 500;
+	letter-spacing: 0.1em; text-transform: uppercase; color: #5d636b;
+}
+</style></head>
+<body>
+	<div class="brand">${ICON}Compress Pro</div>
+	<main><h1>${esc(headline)}</h1><p>${esc(subline)}</p></main>
+	<div class="chips">${CHIPS.map((c) => `<span class="chip">${c}</span>`).join('')}</div>
+</body></html>`;
+
+mkdirSync(join(ROOT, 'static', 'og'), { recursive: true });
+const browser = await chromium.launch();
+const page = await browser.newPage({
+	viewport: { width: 1200, height: 630 },
+	deviceScaleFactor: 2 // render @2x, downscale below → crisp text
+});
+for (const [file, headline, subline] of PAGES) {
+	await page.setContent(html(headline, subline));
+	await page.evaluate(() => document.fonts.ready);
+	const png = await page.screenshot({ type: 'png' });
+	const out = join(ROOT, 'static', file);
+	// q88, not 82: the paper grain sits right at mozjpeg's quantization
+	// threshold — at 82 it flattens to plain gray.
+	await sharp(png).resize(1200, 630).jpeg({ quality: 88, mozjpeg: true }).toFile(out);
+	console.log(`${file}  ${(statSync(out).size / 1024).toFixed(0)} kB`);
+}
+await browser.close();
